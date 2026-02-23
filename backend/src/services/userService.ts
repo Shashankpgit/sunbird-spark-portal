@@ -113,7 +113,7 @@ export const getUserByEmail = async (emailId: string, req: Request): Promise<boo
     return responseData.result.exists;
 };
 
-export const createUserWithEmail = async (googleUser: any, client_id: string, req: Request): Promise<UserApiResponse> => {
+export const createUserWithEmail = async (googleUser: { emailId?: string; name?: string; idToken?: string }, client_id: string, req: Request): Promise<UserApiResponse> => {
     if (_.isEmpty(googleUser.name)) {
         throw new Error('USER_NAME_NOT_PRESENT');
     }

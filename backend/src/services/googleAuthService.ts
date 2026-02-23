@@ -20,14 +20,38 @@ const keycloakGoogleConfig = {
 
 const keycloakGoogle = getKeycloakClient(keycloakGoogleConfig, sessionStore);
 
-export const createSession = async (emailId: string, req: Request, res: Response): Promise<{ access_token: string; expires_at: number }> => {
+export const createSession = async (emailId: string, idToken: string, req: Request, res: Response): Promise<{ access_token: string; expires_at: number }> => {
     let grant;
 
     try {
-        grant = await keycloakGoogle.grantManager.obtainFromClientCredentials();
+        const tokenUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/token`;
+        const params = new URLSearchParams();
+        params.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
+        params.append('client_secret', envConfig.KEYCLOAK_GOOGLE_CLIENT_SECRET);
+        params.append('grant_type', 'urn:ietf:params:oauth:grant-type:token-exchange');
+        params.append('subject_token', idToken);
+        params.append('subject_issuer', 'google');
+        params.append('subject_token_type', 'urn:ietf:params:oauth:token-type:id_token');
+
+        const { default: axios } = await import('axios');
+        const response = await axios.post(tokenUrl, params.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        const tokenData = response.data;
+
+        // Construct a grant object compatible with keycloak-connect
+        grant = await keycloakGoogle.grantManager.createGrant({
+            access_token: tokenData.access_token,
+            refresh_token: tokenData.refresh_token,
+            id_token: tokenData.id_token,
+            expires_in: tokenData.expires_in,
+            token_type: tokenData.token_type
+        });
+
     } catch (error) {
         logger.error({
-            msg: 'googleOauthHelper:createSession failed',
+            msg: 'googleOauthHelper:createSession token exchange failed',
             error
         });
         throw error;
@@ -71,13 +95,13 @@ class GoogleOauth {
                 logger.error('GOOGLE_OAUTH_DOMAIN_URL_MISSING');
                 throw new Error('GOOGLE_OAUTH_DOMAIN_URL_MISSING');
             }
-            
+
             const domainHost = new URL(envConfig.DOMAIN_URL).host;
             if (host !== domainHost) {
                 logger.error(`HOST_MISMATCH: Request host ${host} does not match domain URL host ${domainHost}`);
                 throw new Error('HOST_MISMATCH');
             }
-            
+
             const redirect = `${envConfig.DOMAIN_URL}/google/auth/callback`;
 
             if (!_.isString(envConfig.GOOGLE_OAUTH_CLIENT_ID) || _.isEmpty(envConfig.GOOGLE_OAUTH_CLIENT_ID.trim()) ||
@@ -152,7 +176,8 @@ class GoogleOauth {
 
             return {
                 emailId: payload.email,
-                name: payload.name
+                name: payload.name,
+                idToken: tokens.id_token
             };
         } catch (error) {
             logger.error({
@@ -253,7 +278,7 @@ export const validateRedirectUrl = (url: string | undefined): string => {
 };
 
 export const handleUserAuthentication = async (
-    googleUser: { emailId?: string; name?: string },
+    googleUser: { emailId?: string; name?: string; idToken?: string },
     client_id: string,
     req: Request,
     res: Response
@@ -282,7 +307,8 @@ export const handleUserAuthentication = async (
     }
 
     try {
-        await createSession(googleUser.emailId, req, res);
+        if (!googleUser.idToken) throw new Error('GOOGLE_ID_TOKEN_MISSING');
+        await createSession(googleUser.emailId, googleUser.idToken, req, res);
     } catch (error) {
         logger.error('Error creating session:', error);
         throw new Error('SESSION_CREATION_FAILED');

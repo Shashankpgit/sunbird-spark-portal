@@ -252,7 +252,8 @@ describe('GoogleController', () => {
 
             mockGoogleAuthService.verifyAndGetProfile.mockResolvedValue({
                 emailId: 'existing@example.com',
-                name: 'Existing User'
+                name: 'Existing User',
+                idToken: 'test-id-token'
             });
 
             mockHandleUserAuthentication.mockResolvedValue(true);
@@ -261,7 +262,7 @@ describe('GoogleController', () => {
 
             expect(mockRes.redirect).toHaveBeenCalledWith('/home');
             expect(mockHandleUserAuthentication).toHaveBeenCalledWith(
-                { emailId: 'existing@example.com', name: 'Existing User' },
+                { emailId: 'existing@example.com', name: 'Existing User', idToken: 'test-id-token' },
                 'test-client',
                 mockReq,
                 mockRes
@@ -292,7 +293,8 @@ describe('GoogleController', () => {
 
             mockGoogleAuthService.verifyAndGetProfile.mockResolvedValue({
                 emailId: 'newuser@example.com',
-                name: 'New User'
+                name: 'New User',
+                idToken: 'test-id-token'
             });
 
             mockHandleUserAuthentication.mockResolvedValue(false);
@@ -301,7 +303,7 @@ describe('GoogleController', () => {
 
             expect(mockRes.redirect).toHaveBeenCalledWith('/onboarding');
             expect(mockHandleUserAuthentication).toHaveBeenCalledWith(
-                { emailId: 'newuser@example.com', name: 'New User' },
+                { emailId: 'newuser@example.com', name: 'New User', idToken: 'test-id-token' },
                 'test-client',
                 mockReq,
                 mockRes
