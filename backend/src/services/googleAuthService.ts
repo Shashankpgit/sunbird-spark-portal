@@ -92,7 +92,7 @@ class GoogleOauth {
             const redirectUri = `${envConfig.DOMAIN_URL}/google/auth/callback`;
             const keycloakAuthUrl = new URL(`${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/auth`);
 
-            keycloakAuthUrl.searchParams.append('client_id', envConfig.PORTAL_AUTH_SERVER_CLIENT);
+            keycloakAuthUrl.searchParams.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
             keycloakAuthUrl.searchParams.append('redirect_uri', redirectUri);
             keycloakAuthUrl.searchParams.append('response_type', 'code');
             keycloakAuthUrl.searchParams.append('scope', 'openid');
@@ -138,7 +138,7 @@ class GoogleOauth {
             // we can confidently decode the payload without a full RSA signature verification for this specific step 
             // (the SSL/TLS connection provides the authenticity guarantee here).
             const base64Url = tokenData.id_token.split('.')[1];
-            const base64 = base64Url.replace(/-/g, '+').replace(/_g/, '/');
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
             const jsonPayload = decodeURIComponent(atob(base64).split('').map(function (c) {
                 return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
             }).join(''));

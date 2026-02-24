@@ -139,7 +139,7 @@ describe('GoogleAuthService - Core OAuth', () => {
     describe('generateAuthUrl', () => {
         it('should generate auth URL with correct parameters', () => {
             const expectedUrl = new URL('https://example.com/auth/realms/test-realm/protocol/openid-connect/auth');
-            expectedUrl.searchParams.append('client_id', 'test-portal-client');
+            expectedUrl.searchParams.append('client_id', 'test-keycloak-client-id');
             expectedUrl.searchParams.append('redirect_uri', 'https://example.com/google/auth/callback');
             expectedUrl.searchParams.append('response_type', 'code');
             expectedUrl.searchParams.append('scope', 'openid');
