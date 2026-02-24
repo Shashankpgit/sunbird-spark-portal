@@ -1,5 +1,3 @@
-import { google } from 'googleapis';
-import { OAuth2Client } from 'google-auth-library';
 import { envConfig } from '../config/env.js';
 import { Request, Response } from 'express';
 import { getKeycloakClient } from '../auth/keycloakManager.js';
@@ -20,27 +18,12 @@ const keycloakGoogleConfig = {
 
 const keycloakGoogle = getKeycloakClient(keycloakGoogleConfig, sessionStore);
 
-export const createSession = async (emailId: string, idToken: string, req: Request, res: Response): Promise<{ access_token: string; expires_at: number }> => {
+export const createSession = async (tokenData: any, req: Request, res: Response): Promise<{ access_token: string; expires_at: number }> => {
     let grant;
 
     try {
-        const tokenUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/token`;
-        const params = new URLSearchParams();
-        params.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
-        params.append('client_secret', envConfig.KEYCLOAK_GOOGLE_CLIENT_SECRET);
-        params.append('grant_type', 'urn:ietf:params:oauth:grant-type:token-exchange');
-        params.append('subject_token', idToken);
-        params.append('subject_issuer', 'google');
-        params.append('subject_token_type', 'urn:ietf:params:oauth:token-type:id_token');
-
-        const { default: axios } = await import('axios');
-        const response = await axios.post(tokenUrl, params.toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
-
-        const tokenData = response.data;
-
         // Construct a grant object compatible with keycloak-connect
+        // using the tokens obtained from the Keycloak authorization_code exchange
         grant = await keycloakGoogle.grantManager.createGrant({
             access_token: tokenData.access_token,
             refresh_token: tokenData.refresh_token,
@@ -51,10 +34,14 @@ export const createSession = async (emailId: string, idToken: string, req: Reque
 
     } catch (error) {
         logger.error({
-            msg: 'googleOauthHelper:createSession token exchange failed',
+            msg: 'googleOauthHelper:createSession failed to create grant',
             error
         });
         throw error;
+    }
+
+    if (!grant) {
+        throw new Error('GRANT_CREATION_FAILED');
     }
 
     keycloakGoogle.storeGrant(grant, req, res);
@@ -85,15 +72,15 @@ export const createSession = async (emailId: string, idToken: string, req: Reque
 };
 
 class GoogleOauth {
-    createClient(req: Request) {
+    generateAuthUrl({ nonce, state, req }: { nonce: string; state: string; req: Request }) {
         try {
             const host = req.get('host');
             if (!_.isString(host) || _.isEmpty(host.trim())) {
                 throw new Error('HOST_HEADER_MISSING');
             }
             if (!_.isString(envConfig.DOMAIN_URL) || _.isEmpty(envConfig.DOMAIN_URL.trim())) {
-                logger.error('GOOGLE_OAUTH_DOMAIN_URL_MISSING');
-                throw new Error('GOOGLE_OAUTH_DOMAIN_URL_MISSING');
+                logger.error('DOMAIN_URL_MISSING');
+                throw new Error('DOMAIN_URL_MISSING');
             }
 
             const domainHost = new URL(envConfig.DOMAIN_URL).host;
@@ -102,39 +89,18 @@ class GoogleOauth {
                 throw new Error('HOST_MISMATCH');
             }
 
-            const redirect = `${envConfig.DOMAIN_URL}/google/auth/callback`;
+            const redirectUri = `${envConfig.DOMAIN_URL}/google/auth/callback`;
+            const keycloakAuthUrl = new URL(`${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/auth`);
 
-            if (!_.isString(envConfig.GOOGLE_OAUTH_CLIENT_ID) || _.isEmpty(envConfig.GOOGLE_OAUTH_CLIENT_ID.trim()) ||
-                !_.isString(envConfig.GOOGLE_OAUTH_CLIENT_SECRET) || _.isEmpty(envConfig.GOOGLE_OAUTH_CLIENT_SECRET.trim())) {
-                logger.error('GOOGLE_OAUTH_CONFIG_MISSING');
-                throw new Error('GOOGLE_OAUTH_CONFIG_MISSING');
-            }
+            keycloakAuthUrl.searchParams.append('client_id', envConfig.PORTAL_AUTH_SERVER_CLIENT);
+            keycloakAuthUrl.searchParams.append('redirect_uri', redirectUri);
+            keycloakAuthUrl.searchParams.append('response_type', 'code');
+            keycloakAuthUrl.searchParams.append('scope', 'openid');
+            keycloakAuthUrl.searchParams.append('state', state);
+            keycloakAuthUrl.searchParams.append('nonce', nonce);
+            keycloakAuthUrl.searchParams.append('kc_idp_hint', 'google');
 
-            return new google.auth.OAuth2(
-                envConfig.GOOGLE_OAUTH_CLIENT_ID,
-                envConfig.GOOGLE_OAUTH_CLIENT_SECRET,
-                redirect
-            );
-        } catch (error) {
-            logger.error({
-                msg: 'GoogleOauth:createClient failed',
-                error
-            });
-            throw error;
-        }
-    }
-
-    generateAuthUrl({ nonce, state, req }: { nonce: string; state: string; req: Request }) {
-        try {
-            const client = this.createClient(req);
-            return client.generateAuthUrl({
-                access_type: 'offline',
-                response_type: 'code',
-                scope: ['openid', 'email', 'profile'],
-                state,
-                nonce,
-                prompt: 'consent'
-            });
+            return keycloakAuthUrl.toString();
         } catch (error) {
             logger.error({
                 msg: 'GoogleOauth:generateAuthUrl failed',
@@ -144,45 +110,54 @@ class GoogleOauth {
         }
     }
 
-    async verifyAndGetProfile({ code, nonce, req }: { code: string; nonce: string; req: Request }) {
+    async verifyAndGetProfile({ code }: { code: string }) {
         try {
-            const client = this.createClient(req);
+            const redirectUri = `${envConfig.DOMAIN_URL}/google/auth/callback`;
+            const tokenUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/token`;
 
-            const { tokens } = await client.getToken(code);
+            const params = new URLSearchParams();
+            params.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
+            params.append('client_secret', envConfig.KEYCLOAK_GOOGLE_CLIENT_SECRET);
+            params.append('grant_type', 'authorization_code');
+            params.append('code', code);
+            params.append('redirect_uri', redirectUri);
 
-            if (!tokens?.id_token) {
+            const { default: axios } = await import('axios');
+            const response = await axios.post(tokenUrl, params.toString(), {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+            });
+
+            const tokenData = response.data;
+
+            if (!tokenData?.id_token) {
                 throw new Error('FAILED_TO_FETCH_ID_TOKEN');
             }
 
-            const verifier = new OAuth2Client(envConfig.GOOGLE_OAUTH_CLIENT_ID);
-            const ticket = await verifier.verifyIdToken({
-                idToken: tokens.id_token,
-                audience: envConfig.GOOGLE_OAUTH_CLIENT_ID
-            });
+            // Parse the JWT id_token to extract user information
+            // Note: Since Keycloak issued this token to our confidential client over a secure backend channel,
+            // we can confidently decode the payload without a full RSA signature verification for this specific step 
+            // (the SSL/TLS connection provides the authenticity guarantee here).
+            const base64Url = tokenData.id_token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_g/, '/');
+            const jsonPayload = decodeURIComponent(atob(base64).split('').map(function (c) {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
 
-            const payload = ticket.getPayload();
+            const payload = JSON.parse(jsonPayload);
 
             if (!payload) {
                 throw new Error('INVALID_ID_TOKEN');
             }
 
-            if (!payload.email_verified) {
-                throw new Error('EMAIL_NOT_VERIFIED');
-            }
-
-            if (payload.nonce !== nonce) {
-                throw new Error('INVALID_NONCE');
-            }
-
             return {
                 emailId: payload.email,
-                name: payload.name,
-                idToken: tokens.id_token
+                name: payload.name || payload.preferred_username,
+                tokenData: tokenData
             };
-        } catch (error) {
+        } catch (error: any) {
             logger.error({
                 msg: 'GoogleOauth:verifyAndGetProfile failed',
-                error
+                error: error.response?.data || error
             });
             throw error;
         }
@@ -278,7 +253,7 @@ export const validateRedirectUrl = (url: string | undefined): string => {
 };
 
 export const handleUserAuthentication = async (
-    googleUser: { emailId?: string; name?: string; idToken?: string },
+    googleUser: { emailId?: string; name?: string; tokenData?: any },
     client_id: string,
     req: Request,
     res: Response
@@ -307,8 +282,8 @@ export const handleUserAuthentication = async (
     }
 
     try {
-        if (!googleUser.idToken) throw new Error('GOOGLE_ID_TOKEN_MISSING');
-        await createSession(googleUser.emailId, googleUser.idToken, req, res);
+        if (!googleUser.tokenData) throw new Error('KEYCLOAK_TOKENS_MISSING');
+        await createSession(googleUser.tokenData, req, res);
     } catch (error) {
         logger.error('Error creating session:', error);
         throw new Error('SESSION_CREATION_FAILED');

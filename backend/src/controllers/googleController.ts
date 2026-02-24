@@ -58,17 +58,13 @@ export const handleGoogleAuthCallback = async (req: Request, res: Response) => {
     let redirectUrl: string;
 
     try {
-        const { state, nonce, client_id } = validateOAuthSession(req);
+        const { state, client_id } = validateOAuthSession(req);
 
         const code = validateOAuthCallback(req, state);
 
         markSessionAsUsed(req);
 
-        const googleUser = await googleOauth.verifyAndGetProfile({
-            code,
-            nonce,
-            req
-        });
+        const googleUser = await googleOauth.verifyAndGetProfile({ code });
 
         const userExists = await handleUserAuthentication(googleUser, client_id, req, res);
 

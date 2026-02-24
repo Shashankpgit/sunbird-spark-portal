@@ -2,19 +2,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response } from 'express';
 
 // Use vi.hoisted to create mocks that can be used in vi.mock factories
-const { 
+const {
     mockObtainFromClientCredentials,
     mockStoreGrant,
-    mockAuthenticated
+    mockAuthenticated,
+    mockCreateGrant
 } = vi.hoisted(() => {
     const mockObtainFromClientCredentials = vi.fn();
     const mockStoreGrant = vi.fn();
     const mockAuthenticated = vi.fn();
-    
+    const mockCreateGrant = vi.fn();
+
     return {
         mockObtainFromClientCredentials,
         mockStoreGrant,
-        mockAuthenticated
+        mockAuthenticated,
+        mockCreateGrant
     };
 });
 
@@ -33,7 +36,8 @@ vi.mock('google-auth-library', () => ({
 vi.mock('../auth/keycloakManager.js', () => ({
     getKeycloakClient: vi.fn(() => ({
         grantManager: {
-            obtainFromClientCredentials: mockObtainFromClientCredentials
+            obtainFromClientCredentials: mockObtainFromClientCredentials,
+            createGrant: mockCreateGrant
         },
         storeGrant: mockStoreGrant,
         authenticated: mockAuthenticated
@@ -62,11 +66,11 @@ vi.mock('../config/env.js', () => ({
     }
 }));
 
-import { 
-    validateOAuthSession, 
-    validateOAuthCallback, 
+import {
+    validateOAuthSession,
+    validateOAuthCallback,
     markSessionAsUsed,
-    handleUserAuthentication 
+    handleUserAuthentication
 } from './googleAuthService.js';
 
 describe('GoogleAuthService - Validation & Helpers', () => {
@@ -168,7 +172,7 @@ describe('GoogleAuthService - Validation & Helpers', () => {
             vi.clearAllMocks();
             mockGetUserByEmail.mockReset();
             mockCreateUserWithEmail.mockReset();
-            mockObtainFromClientCredentials.mockResolvedValue({ access_token: { token: 'test-access-token', content: { exp: 1234567890 } } });
+            mockCreateGrant.mockResolvedValue({ access_token: { token: 'test-access-token', content: { exp: 1234567890 } } });
             mockAuthenticated.mockResolvedValue(undefined);
             vi.doMock('./userService.js', () => ({ getUserByEmail: mockGetUserByEmail, createUserWithEmail: mockCreateUserWithEmail }));
         });
@@ -176,14 +180,14 @@ describe('GoogleAuthService - Validation & Helpers', () => {
         it('should handle existing and new user authentication', async () => {
             // Existing user
             mockGetUserByEmail.mockResolvedValue({ email: 'test@example.com' });
-            let result = await handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User' }, 'test-client-id', mockRequest as Request, mockResponse as Response);
+            let result = await handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response);
             expect(result).toBe(true);
             expect(mockCreateUserWithEmail).not.toHaveBeenCalled();
 
             // New user
             mockGetUserByEmail.mockResolvedValue(null);
             mockCreateUserWithEmail.mockResolvedValue({ email: 'test@example.com' });
-            result = await handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User' }, 'test-client-id', mockRequest as Request, mockResponse as Response);
+            result = await handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response);
             expect(result).toBe(false);
             expect(mockCreateUserWithEmail).toHaveBeenCalled();
         });
@@ -194,17 +198,17 @@ describe('GoogleAuthService - Validation & Helpers', () => {
 
             // Fetch user error
             mockGetUserByEmail.mockRejectedValue(new Error('Database error'));
-            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User' }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('FETCH_USER_FAILED');
+            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('FETCH_USER_FAILED');
 
             // Create user error
             mockGetUserByEmail.mockResolvedValue(null);
             mockCreateUserWithEmail.mockRejectedValue(new Error('Create user error'));
-            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User' }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('CREATE_USER_FAILED');
+            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('CREATE_USER_FAILED');
 
             // Session creation error
             mockGetUserByEmail.mockResolvedValue({ email: 'test@example.com' });
-            mockObtainFromClientCredentials.mockRejectedValue(new Error('Session error'));
-            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User' }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('SESSION_CREATION_FAILED');
+            mockCreateGrant.mockRejectedValue(new Error('Session error'));
+            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('SESSION_CREATION_FAILED');
         });
     });
 });
