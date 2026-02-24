@@ -175,6 +175,7 @@ describe('GoogleAuthService - Validation & Helpers', () => {
             mockCreateGrant.mockResolvedValue({ access_token: { token: 'test-access-token', content: { exp: 1234567890 } } });
             mockAuthenticated.mockResolvedValue(undefined);
             vi.doMock('./userService.js', () => ({ getUserByEmail: mockGetUserByEmail, createUserWithEmail: mockCreateUserWithEmail }));
+            vi.doMock('../utils/sessionUtils.js', () => ({ regenerateSession: vi.fn().mockResolvedValue(undefined) }));
         });
 
         it('should handle existing and new user authentication', async () => {

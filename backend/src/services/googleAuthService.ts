@@ -137,17 +137,11 @@ class GoogleOauth {
             // Note: Since Keycloak issued this token to our confidential client over a secure backend channel,
             // we can confidently decode the payload without a full RSA signature verification for this specific step 
             // (the SSL/TLS connection provides the authenticity guarantee here).
-            const base64Url = tokenData.id_token.split('.')[1];
-            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-            const jsonPayload = decodeURIComponent(atob(base64).split('').map(function (c) {
-                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-            }).join(''));
-
-            const payload = JSON.parse(jsonPayload);
-
-            if (!payload) {
-                throw new Error('INVALID_ID_TOKEN');
-            }
+            const base64 = tokenData.id_token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(
+                atob(base64).split('').map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+            );
+            const payload = JSON.parse(jsonPayload) as Record<string, string>;
 
             return {
                 emailId: payload.email,
@@ -287,6 +281,30 @@ export const handleUserAuthentication = async (
     } catch (error) {
         logger.error('Error creating session:', error);
         throw new Error('SESSION_CREATION_FAILED');
+    }
+
+    // Mirror the regular login flow (/portal/auth/callback):
+    // regenerate session (new SID + logged-in Kong token), then populate
+    // userId/roles/orgs from the user profile so the rest of the portal
+    // treats this session as authenticated.
+    try {
+        const { regenerateSession } = await import('../utils/sessionUtils.js');
+        await regenerateSession(req);
+
+        const tokenSubject = _.get(req, 'kauth.grant.access_token.content.sub');
+        if (tokenSubject) {
+            const userIdFromToken = _.last(_.split(tokenSubject, ':'));
+            req.session.userId = userIdFromToken;
+
+            if (userIdFromToken) {
+                const { fetchUserById, setUserSession } = await import('./userService.js');
+                const userProfileResponse = await fetchUserById(userIdFromToken, req);
+                await setUserSession(req, userProfileResponse);
+            }
+        }
+    } catch (error) {
+        logger.error('Error setting up user session after Google SSO:', error);
+        throw new Error('USER_SESSION_SETUP_FAILED');
     }
 
     return !!userExists;
