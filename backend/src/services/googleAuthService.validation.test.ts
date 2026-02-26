@@ -181,7 +181,7 @@ describe('GoogleAuthService - Validation & Helpers', () => {
             mockCreateUserWithEmail.mockReset();
             mockCreateGrant.mockResolvedValue({ access_token: { token: 'test-access-token', content: { exp: 1234567890 } } });
             mockAuthenticated.mockResolvedValue(undefined);
-            mockAxiosPost.mockResolvedValue({ data: { access_token: 'refreshed-token', refresh_token: 'new-refresh-token' } });
+            mockAxiosPost.mockResolvedValue({ data: { access_token: 'exchanged-token', refresh_token: 'exchanged-refresh-token', id_token: 'exchanged-id-token' } });
             vi.doMock('./userService.js', () => ({ getUserByEmail: mockGetUserByEmail, createUserWithEmail: mockCreateUserWithEmail }));
             vi.doMock('../utils/sessionUtils.js', () => ({ regenerateSession: vi.fn().mockResolvedValue(undefined) }));
         });
@@ -214,8 +214,14 @@ describe('GoogleAuthService - Validation & Helpers', () => {
             mockCreateUserWithEmail.mockRejectedValue(new Error('Create user error'));
             await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('CREATE_USER_FAILED');
 
+            // Token exchange error
+            mockGetUserByEmail.mockResolvedValue({ email: 'test@example.com' });
+            mockAxiosPost.mockRejectedValue(new Error('Exchange failed'));
+            await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('TOKEN_EXCHANGE_FAILED');
+
             // Session creation error
             mockGetUserByEmail.mockResolvedValue({ email: 'test@example.com' });
+            mockAxiosPost.mockResolvedValue({ data: { access_token: 'exchanged-token', refresh_token: 'exchanged-refresh-token' } });
             mockCreateGrant.mockRejectedValue(new Error('Session error'));
             await expect(handleUserAuthentication({ emailId: 'test@example.com', name: 'Test User', tokenData: { access_token: 'test' } }, 'test-client-id', mockRequest as Request, mockResponse as Response)).rejects.toThrow('SESSION_CREATION_FAILED');
         });

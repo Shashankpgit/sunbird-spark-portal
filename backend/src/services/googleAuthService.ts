@@ -226,6 +226,18 @@ export const validateRedirectUrl = (url: string | undefined): string => {
     }
 };
 
+export const exchangeToken = async (subjectToken: string): Promise<Record<string, unknown>> => {
+    const params = new URLSearchParams();
+    params.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
+    params.append('client_secret', envConfig.KEYCLOAK_GOOGLE_CLIENT_SECRET);
+    params.append('grant_type', 'urn:ietf:params:oauth:grant-type:token-exchange');
+    params.append('subject_token', subjectToken);
+    params.append('subject_token_type', 'urn:ietf:params:oauth:token-type:access_token');
+    const { default: axios } = await import('axios');
+    const { data } = await axios.post(`${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/token`, params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    return data as Record<string, unknown>;
+};
+
 export const handleUserAuthentication = async (
     googleUser: { emailId?: string; name?: string; tokenData?: any },
     client_id: string,
@@ -253,28 +265,14 @@ export const handleUserAuthentication = async (
             logger.error('Error creating user:', error);
             throw new Error('CREATE_USER_FAILED');
         }
+    }
 
-        // Refresh the token after user creation so Keycloak's SPI mapper
-        // can include the Sunbird userId in the token's sub claim.
-        // The initial token was issued before the user existed in Sunbird,
-        // so the SPI mapper had nothing to map at that point.
-        try {
-            const tokenUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/token`;
-            const refreshParams = new URLSearchParams();
-            refreshParams.append('client_id', envConfig.KEYCLOAK_GOOGLE_CLIENT_ID);
-            refreshParams.append('client_secret', envConfig.KEYCLOAK_GOOGLE_CLIENT_SECRET);
-            refreshParams.append('grant_type', 'refresh_token');
-            refreshParams.append('refresh_token', googleUser.tokenData.refresh_token);
-
-            const { default: axios } = await import('axios');
-            const refreshResponse = await axios.post(tokenUrl, refreshParams.toString(), {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-            });
-            googleUser.tokenData = refreshResponse.data;
-        } catch (error) {
-            logger.error('Error refreshing token after user creation:', error);
-            throw new Error('TOKEN_REFRESH_FAILED');
-        }
+    // Token Exchange (RFC 8693): ensures SPI mapper embeds Sunbird userId in sub claim for all users.
+    try {
+        googleUser.tokenData = await exchangeToken(googleUser.tokenData.access_token);
+    } catch (error) {
+        logger.error('Error exchanging token:', error);
+        throw new Error('TOKEN_EXCHANGE_FAILED');
     }
 
     try {
@@ -294,18 +292,13 @@ export const handleUserAuthentication = async (
         await regenerateSession(req);
 
         const tokenSubject = _.get(req, 'kauth.grant.access_token.content.sub');
-        console.log(" req.kauth:", req.kauth);
-        console.log(" tokenSubject:", tokenSubject);
+        const userIdFromToken = tokenSubject ? _.last(_.split(tokenSubject, ':')) : undefined;
+        req.session.userId = userIdFromToken;
 
-        if (tokenSubject) {
-            const userIdFromToken = _.last(_.split(tokenSubject, ':'));
-            req.session.userId = userIdFromToken;
-
-            if (userIdFromToken) {
-                const { fetchUserById, setUserSession } = await import('./userService.js');
-                const userProfileResponse = await fetchUserById(userIdFromToken, req);
-                await setUserSession(req, userProfileResponse);
-            }
+        if (userIdFromToken) {
+            const { fetchUserById, setUserSession } = await import('./userService.js');
+            const userProfileResponse = await fetchUserById(userIdFromToken, req);
+            await setUserSession(req, userProfileResponse);
         }
     } catch (error) {
         logger.error('Error setting up user session after Google SSO:', error);
