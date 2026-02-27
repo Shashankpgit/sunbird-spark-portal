@@ -38,7 +38,11 @@ app.get('/portal/app/v1/info', getAppInfo);
 // Portal Anonymous Routes
 app.use('/portal', sessionMiddleware, ...anonymousMiddlewares, portalAnonymousProxyRoutes)
 // Portal Authentication Routes (Login, Callback, Logout)
-app.use('/portal', portalAuthRoutes);
+// Mounted at root (not '/portal') so req.path retains the full '/portal/...' path,
+// which keycloak-connect's post-auth middleware uses to construct the clean redirect URL
+// after exchanging the auth code. If mounted at '/portal', req.path would be '/auth/callback'
+// and the redirect would go to the wrong URL.
+app.use(portalAuthRoutes);
 
 // Review comment routes
 app.use('/portal/review/comment/v1', sessionMiddleware, keycloak.middleware({ admin: '/home', logout: '/portal/logout' }), keycloak.protect(), reviewCommentRoutes);

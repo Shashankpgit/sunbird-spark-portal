@@ -10,7 +10,7 @@ import _ from 'lodash';
 
 const router = express.Router();
 
-router.get('/login',
+router.get('/portal/login',
     sessionMiddleware,
     (req: Request, res: Response) => {
         logger.info('DEBUG: /portal/login hit ' + JSON.stringify({
@@ -34,7 +34,7 @@ router.get('/login',
     }
 );
 
-router.get('/auth/callback',
+router.get('/portal/auth/callback',
     sessionMiddleware,
     // Add debug logging
     (req: Request, res: Response, next: express.NextFunction) => {
@@ -81,7 +81,7 @@ router.get('/auth/callback',
     }
 );
 
-router.all('/logout', sessionMiddleware, async (req: Request, res: Response) => {
+router.all('/portal/logout', sessionMiddleware, async (req: Request, res: Response) => {
     // 1. Clear Keycloak session/tokens (handled by keycloak middleware usually, but here we just process local logout)
     // 2. Regenerate to anonymous session (clears user data, gets new SID, sets new anonymous tokens)
     try {
