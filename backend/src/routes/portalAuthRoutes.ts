@@ -38,6 +38,7 @@ router.get('/login',
 );
 
 router.get('/auth/callback',
+    postLoginMiddelware,
     sessionMiddleware,
     // Add debug logging
     (req: Request, res: Response, next: express.NextFunction) => {
