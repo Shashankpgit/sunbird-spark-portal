@@ -13,15 +13,6 @@ const router = express.Router();
 router.get('/login',
     sessionMiddleware,
     (req: Request, res: Response) => {
-        logger.info('DEBUG: /portal/login hit ' + JSON.stringify({
-            url: req.url,
-            query: req.query,
-            sessionID: req.sessionID ? '[REDACTED]' : undefined,
-            cookie: req.headers.cookie ? '[REDACTED]' : undefined,
-            hasSession: !!req.session,
-            hasKauth: !!_.get(req, 'kauth')
-        }));
-
         // If already authenticated, go home
         if (req.session && _.get(req, 'kauth.grant')) {
             logger.info('User already authenticated, redirecting to home');
@@ -29,73 +20,74 @@ router.get('/login',
         }
 
         // Redirect directly to the Keycloak OIDC authorization endpoint
-        // const callbackUrl = encodeURIComponent(envConfig.SERVER_URL + '/portal/auth/callback?auth_callback=1');
-        // const oidcAuthUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/auth` +
-        //     `?client_id=${encodeURIComponent(envConfig.PORTAL_AUTH_SERVER_CLIENT)}` +
-        //     `&redirect_uri=${callbackUrl}` +
-        //     `&response_type=code` +
-        //     `&scope=openid`;
+        const callbackUrl = encodeURIComponent(envConfig.SERVER_URL + '/portal/auth/callback');
+        const oidcAuthUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/auth` +
+            `?client_id=${encodeURIComponent(envConfig.PORTAL_AUTH_SERVER_CLIENT)}` +
+            `&redirect_uri=${callbackUrl}` +
+            `&response_type=code` +
+            `&scope=openid`;
 
-        // logger.info('Redirecting to OIDC authorization endpoint');
-        // res.redirect(oidcAuthUrl);
-        logger.info('Redirecting to /portal/auth/callback for login');
-        res.redirect('/portal/auth/callback');
+        logger.info('Redirecting to OIDC authorization endpoint');
+        res.redirect(oidcAuthUrl);
     }
 );
 
 router.get('/auth/callback',
     sessionMiddleware,
-    // Add debug logging
-    (req: Request, res: Response, next: express.NextFunction) => {
-        // Edge case: keycloak-connect might fail if auth_callback is present but no code/state
-        // and no session. Redirect to login to restart flow.
-        if (req.query.auth_callback && !req.query.code && !_.get(req, 'kauth.grant')) {
-            logger.warn('Detected auth_callback without code and no session. Restarting login flow.');
+    // keycloak.middleware provides: req.kauth init (setup.js) and session grant reading (grant-attacher.js)
+    keycloak.middleware({ admin: '/home', logout: '/portal/logout' }),
+    async (req: Request, res: Response) => {
+        if (!req.session) {
+            logger.error('No session found at callback');
+            return res.redirect('/');
+        }
+
+        // Already authenticated — grant was loaded from the session by grant-attacher
+        if (_.get(req, 'kauth.grant')) {
+            logger.info('Grant already present, redirecting to home');
+            return res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL + '/home');
+        }
+
+        const code = req.query.code as string | undefined;
+        if (!code) {
+            logger.warn('No authorization code at callback, redirecting to login');
             return res.redirect('/portal/login');
         }
-        next();
-    },
-    keycloak.middleware({ admin: '/home', logout: '/portal/logout' }),
-    keycloak.protect(),
-    async (req: Request, res: Response) => {
-        logger.info('Entered /portal/auth/callback handler');
-        if (req.session) {
-            try {
-                // Regenerate session
-                await regenerateSession(req);
-                setSessionTTLFromToken(req);
 
-                // Initialize user session
-                const tokenSubject = _.get(req, 'kauth.grant.access_token.content.sub');
-                if (tokenSubject) {
-                    const userIdFromToken = _.last(_.split(tokenSubject, ':'));
-                    req.session.userId = userIdFromToken;
+        try {
+            // Set the redirect_uri that was used in the OIDC authorization request
+            // so keycloak-connect's token exchange uses the correct value
+            req.session.auth_redirect_uri = envConfig.SERVER_URL + '/portal/auth/callback';
 
-                    if (userIdFromToken) {
-                        const userProfileResponse = await fetchUserById(userIdFromToken, req);
-                        await setUserSession(req, userProfileResponse);
-                    }
+            const grant = await keycloak.getGrantFromCode(code, req, res);
+            req.kauth = { grant };
+
+            await regenerateSession(req);
+            setSessionTTLFromToken(req);
+
+            const tokenSubject = _.get(req, 'kauth.grant.access_token.content.sub');
+            if (tokenSubject) {
+                const userIdFromToken = _.last(_.split(tokenSubject, ':'));
+                req.session.userId = userIdFromToken;
+
+                if (userIdFromToken) {
+                    const userProfileResponse = await fetchUserById(userIdFromToken, req);
+                    await setUserSession(req, userProfileResponse);
                 }
-
-                logger.info('Session setup complete, redirecting to /home');
-                res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL + '/home');
-            } catch (err) {
-                logger.error('Error generating session on login', err);
-                res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL || '/');
             }
-        } else {
-            logger.error('No session found after Keycloak protect');
-            res.redirect('/');
+
+            logger.info('Session setup complete, redirecting to /home');
+            res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL + '/home');
+        } catch (err) {
+            logger.error('Error during token exchange', err);
+            res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL || '/');
         }
     }
 );
 
 router.all('/logout', sessionMiddleware, async (req: Request, res: Response) => {
-    // 1. Clear Keycloak session/tokens (handled by keycloak middleware usually, but here we just process local logout)
-    // 2. Regenerate to anonymous session (clears user data, gets new SID, sets new anonymous tokens)
     try {
         await regenerateAnonymousSession(req);
-        // Redirect to Keycloak logout
         const logoutUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/logout?redirect_uri=${encodeURIComponent(envConfig.DEVELOPMENT_REACT_APP_URL || envConfig.SERVER_URL + '/')}`;
         res.redirect(logoutUrl);
     } catch (err) {
