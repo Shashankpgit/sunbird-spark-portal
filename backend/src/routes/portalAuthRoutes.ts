@@ -39,11 +39,11 @@ router.get('/login',
         // logger.info('Redirecting to OIDC authorization endpoint');
         // res.redirect(oidcAuthUrl);
         logger.info('Redirecting to /portal/auth/callback for login');
-        res.redirect('/portal/home');
+        res.redirect('/portal/auth/callback');
     }
 );
 
-router.get('/home',
+router.get('/auth/callback',
     sessionMiddleware,
     // Add debug logging
     (req: Request, res: Response, next: express.NextFunction) => {
