@@ -28,9 +28,16 @@ router.get('/login',
             return res.redirect(envConfig.DEVELOPMENT_REACT_APP_URL + '/home');
         }
 
-        // Otherwise start login flow -> redirect to protected callback
-        logger.info('Redirecting to /portal/auth/callback for login');
-        res.redirect('/portal/auth/callback');
+        // Redirect directly to the Keycloak OIDC authorization endpoint
+        const callbackUrl = encodeURIComponent(envConfig.SERVER_URL + '/portal/auth/callback?auth_callback=1');
+        const oidcAuthUrl = `${envConfig.DOMAIN_URL}/auth/realms/${envConfig.PORTAL_REALM}/protocol/openid-connect/auth` +
+            `?client_id=${encodeURIComponent(envConfig.PORTAL_AUTH_SERVER_CLIENT)}` +
+            `&redirect_uri=${callbackUrl}` +
+            `&response_type=code` +
+            `&scope=openid`;
+
+        logger.info('Redirecting to OIDC authorization endpoint');
+        res.redirect(oidcAuthUrl);
     }
 );
 

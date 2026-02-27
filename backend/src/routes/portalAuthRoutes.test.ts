@@ -52,6 +52,7 @@ vi.mock('../config/env.js', () => ({
         DEVELOPMENT_REACT_APP_URL: 'http://localhost:3000',
         DOMAIN_URL: 'http://domain.com',
         PORTAL_REALM: 'realm',
+        PORTAL_AUTH_SERVER_CLIENT: 'portal',
         SERVER_URL: 'http://server.com'
     }
 }));
@@ -153,14 +154,19 @@ describe('PortalAuthRoutes Integration', () => {
             expect(res.header.location).toBe('http://localhost:3000/home');
         });
 
-        it('should redirect to /portal/auth/callback if not authenticated', async () => {
+        it('should redirect to OIDC authorization endpoint if not authenticated', async () => {
             const app = await setupApp((req, res, next) => {
-                // Do nothing middleware but call next
                 next();
             });
             const res = await request(app).get('/portal/login');
             expect(res.status).toBe(302);
-            expect(res.header.location).toBe('/portal/auth/callback');
+
+            const location = res.header.location as string;
+            expect(location).toContain('http://domain.com/auth/realms/realm/protocol/openid-connect/auth');
+            expect(location).toContain('client_id=portal');
+            expect(location).toContain('redirect_uri=' + encodeURIComponent('http://server.com/portal/auth/callback?auth_callback=1'));
+            expect(location).toContain('response_type=code');
+            expect(location).toContain('scope=openid');
         });
     });
 
