@@ -54,6 +54,33 @@ export default defineConfig({
       },
     },
 
+    // ── Full end-to-end flow: 4 steps in strict order ─────────────────────
+    // Each step depends on the previous so they always run in sequence.
+    // Usage: npx playwright test --project=full-flow --headed
+    // {
+    //   name: 'step-1-login',
+    //   use: { ...devices['Desktop Chrome'] },
+    //   testMatch: '**/consumption_1/login_flow.spec.ts',
+    // },
+    {
+      name: 'step-2-home',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: '**/consumption_1/home_course_flow.spec.ts',
+      // dependencies: ['step-1-login'],
+    },
+    {
+      name: 'step-3-explore',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: '**/consumption_1/course_flow_explore.spec.ts',
+      dependencies: ['step-2-home'],
+    },
+    {
+      name: 'full-flow',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: '**/consumption_1/certificate_download.spec.ts',
+      dependencies: ['step-3-explore'],
+    },
+
     /* Test against mobile viewports. */
     // {
     //   name: 'Mobile Chrome',

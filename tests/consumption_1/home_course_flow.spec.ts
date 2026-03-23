@@ -103,8 +103,85 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
 
   // ── Helper: dismiss the feedback form, then wait for TOC to confirm Completed ─
   // The app updates lesson status AFTER the feedback form is dismissed (async).
-  // We wait up to 6 s for the TOC to reflect "Completed" before returning.
-  const dismissFeedbackForm = async () => {
+  // IMPORTANT: We capture a screenshot + read status/progress BEFORE dismissing,
+  // so we can report a bug if the TOC shows "In Progress" while the form is open.
+  //
+  // lessonHref is the content URL of the lesson just finished (e.g.
+  // /collection/.../content/do_xxx). Passing it lets us find the exact TOC
+  // anchor and read its status badge reliably.
+  const dismissFeedbackForm = async (lessonHref?: string) => {
+    // ── 📸 Capture screenshot BEFORE dismissing ───────────────────────────
+    console.log(`  [${lessonLabel}] 📸 Feedback form visible — capturing state before dismiss`);
+    const feedbackShotPath = `test-results/feedback-form-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+    await page.screenshot({ path: feedbackShotPath, fullPage: false }).catch(() => {});
+    await test.info().attach(`feedback-form-${lessonLabel}`, { path: feedbackShotPath, contentType: 'image/png' }).catch(() => {});
+
+    // ── Read the TOC status for this specific lesson ──────────────────────
+    // Use the same 3-strategy approach as getLessonStatus (but inline, since
+    // getLessonStatus is only available in the test closure).
+    let statusWhileFeedback: string | null = null;
+    if (lessonHref) {
+      const rel = lessonHref.replace('https://test.sunbirded.org', '');
+      const anchor = page.locator(`a[href="${lessonHref}"], a[href="${rel}"]`).first();
+      if (await anchor.isVisible({ timeout: 1500 }).catch(() => false)) {
+        // Strategy 1: last span inside the anchor (the status badge)
+        statusWhileFeedback = await anchor.evaluate((el: Element): string => {
+          const spans = Array.from(el.querySelectorAll('span, small, [class*="status"], [class*="badge"]'));
+          const last = spans[spans.length - 1];
+          return last?.textContent?.trim() ?? el.textContent?.trim() ?? '';
+        }).catch(() => '');
+        // Normalise
+        if (/completed/i.test(statusWhileFeedback ?? '')) statusWhileFeedback = 'Completed';
+        else if (/in\s*progress/i.test(statusWhileFeedback ?? '')) statusWhileFeedback = 'In progress';
+        else if (/not\s*view/i.test(statusWhileFeedback ?? '')) statusWhileFeedback = 'Not viewed';
+        else {
+          // Strategy 2: all spans
+          const allSpans = await anchor.evaluate((el: Element): string =>
+            Array.from(el.querySelectorAll('span, small')).map(s => s.textContent?.trim() ?? '').join('|')
+          ).catch(() => '');
+          if (/completed/i.test(allSpans)) statusWhileFeedback = 'Completed';
+          else if (/in\s*progress/i.test(allSpans)) statusWhileFeedback = 'In progress';
+          else if (/not\s*view/i.test(allSpans)) statusWhileFeedback = 'Not viewed';
+          else {
+            // Strategy 3: full textContent
+            const full = (await anchor.textContent().catch(() => ''))?.trim() ?? '';
+            if (/completed/i.test(full)) statusWhileFeedback = 'Completed';
+            else if (/in\s*progress/i.test(full)) statusWhileFeedback = 'In progress';
+            else if (/not\s*view/i.test(full)) statusWhileFeedback = 'Not viewed';
+            else statusWhileFeedback = full.substring(0, 60) || null;
+          }
+        }
+      }
+    }
+
+    // ── Read the progress % ───────────────────────────────────────────────
+    const progressWhileFeedback: number | null = await page.evaluate((): number | null => {
+      // aria-valuenow on a progress bar
+      const bar = document.querySelector('[aria-valuenow][role="progressbar"], [aria-valuenow][class*="progress"]');
+      if (bar) return parseInt((bar as HTMLElement).getAttribute('aria-valuenow') ?? '', 10) || null;
+      // text like "50%"
+      const match = document.body.innerText.match(/\b(\d{1,3})%/);
+      return match ? parseInt(match[1], 10) : null;
+    }).catch(() => null);
+
+    console.log(`  [${lessonLabel}] While feedback form open — status="${statusWhileFeedback ?? '(anchor not found)'}", progress=${progressWhileFeedback ?? 'unknown'}%`);
+
+    // ── Report bugs if status or progress is stale ────────────────────────
+    if (statusWhileFeedback !== null && statusWhileFeedback !== 'Completed') {
+      const bugMsg =
+        `BUG: [${lessonLabel}] Lesson status not updated to "Completed" even while the ` +
+        `feedback form ("We would love to hear from you") is visible.\n` +
+        `  The feedback form confirms the lesson has been fully consumed,\n` +
+        `  but the TOC still shows: "${statusWhileFeedback}".\n` +
+        `  Course Progress bar shows: ${progressWhileFeedback ?? 'unknown'}%.\n` +
+        `  Screenshot attached ("feedback-form-${lessonLabel}") shows the feedback form + stale TOC status side-by-side.\n` +
+        `  Lesson URL: ${lessonHref ?? '(unknown)'}`;
+      console.log(`  🐛 ${bugMsg}`);
+      await bugReport(page, `lesson-status-stale-while-feedback-${lessonLabel.replace(/\s+/g, '-')}`, bugMsg);
+      expect.soft(statusWhileFeedback, bugMsg).toBe('Completed');
+    }
+
+    // ── Now dismiss the feedback form ──────────────────────────────────────
     const dismissSels = [
       'button:has-text("Skip")',
       'button:has-text("Close")',
@@ -173,15 +250,18 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
   // If feedback form already showing — lesson was already done
   if (await isFeedbackFormVisible()) {
     console.log(`  [${lessonLabel}] Feedback form visible on entry — lesson already completed`);
-    await dismissFeedbackForm();
+    await dismissFeedbackForm(page.url());
     return true;
   }
 
   // ── 1. Detect video content (YouTube / native video) ──────────────────────
+  // Wait up to 5s for the content iframe to load — WEBM players load slowly.
+  await page.waitForTimeout(2000);
+
   for (const f of [page as any, ...page.frames()]) {
     try {
       const vid = f.locator('video').first();
-      if (await vid.isVisible({ timeout: 600 }).catch(() => false)) {
+      if (await vid.isVisible({ timeout: 2000 }).catch(() => false)) {
         console.log(`  [${lessonLabel}] Video content detected`);
 
         const playerIframe = page.locator('iframe#contentPlayer, iframe[name="contentPlayer"], iframe[class*="content-player"]').first();
@@ -260,7 +340,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
 
           if (await isFeedbackFormVisible()) {
             console.log(`  [${lessonLabel}] ✅ Feedback form appeared — video lesson done`);
-            await dismissFeedbackForm();
+            await dismissFeedbackForm(page.url());
             return true;
           }
           if (await isYouJustCompletedVisible()) {
@@ -354,14 +434,14 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
   if (pi && pi.total > 1) {
     // ── Known total: iterate until current page reaches total ──────────────
     const target = pi.total;
-    // Allow up to 2× the total page count as clicks (some clicks may not advance)
-    const maxAttempts = Math.max(200, target * 2);
+    // Allow up to 2× the total page count as clicks, capped at 200
+    const maxAttempts = Math.min(200, Math.max(50, target * 2));
     let attempts = 0;
     while (attempts < maxAttempts) {
       attempts++;
       if (await isFeedbackFormVisible()) {
         console.log(`  [${lessonLabel}] ✅ Feedback form — lesson done`);
-        await dismissFeedbackForm();
+        await dismissFeedbackForm(page.url());
         return true;
       }
       if (await isLessonCompleted()) {
@@ -374,7 +454,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
         if (cur.current >= cur.total) {
           // On last page — wait for app to mark Completed
           await page.waitForTimeout(1500);
-          if (await isFeedbackFormVisible()) { await dismissFeedbackForm(); return true; }
+          if (await isFeedbackFormVisible()) { await dismissFeedbackForm(page.url()); return true; }
           if (await isYouJustCompletedVisible()) { console.log(`  [${lessonLabel}] ✅ "You just completed" banner`); return true; }
           if (await isLessonCompleted()) return true;
         }
@@ -383,15 +463,17 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
       await page.waitForTimeout(700);
     }
   } else {
-    // ── Unknown total: keep clicking until Completed or large cap ──────────
-    // 1000 clicks handles lessons with 100+ pages without an arbitrary low cap.
-    const maxClicks = 1000;
+    // ── Unknown total: keep clicking until Completed or cap ────────────────
+    // Cap at 50 clicks — if a lesson hasn't completed by then, something is
+    // wrong with detection (e.g. video content fell through to this path).
+    // After the cap, take a screenshot, report the stale status, and move on.
+    const maxClicks = 50;
     let clicks = 0;
     while (clicks < maxClicks) {
       clicks++;
       if (await isFeedbackFormVisible()) {
         console.log(`  [${lessonLabel}] ✅ Feedback form — lesson done`);
-        await dismissFeedbackForm();
+        await dismissFeedbackForm(page.url());
         return true;
       }
       if (await isYouJustCompletedVisible()) {
@@ -407,7 +489,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
         console.log(`  [${lessonLabel}] Page ${cur.current} / ${cur.total}`);
         if (cur.current >= cur.total) {
           await page.waitForTimeout(1500);
-          if (await isFeedbackFormVisible()) { await dismissFeedbackForm(); return true; }
+          if (await isFeedbackFormVisible()) { await dismissFeedbackForm(page.url()); return true; }
           if (await isYouJustCompletedVisible()) { console.log(`  [${lessonLabel}] ✅ "You just completed" banner`); return true; }
           if (await isLessonCompleted()) return true;
         }
@@ -415,6 +497,15 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
       await clickArrow();
       await page.waitForTimeout(500);
     }
+    // Reached the cap — screenshot the current state and report as a stale-status bug
+    console.log(`  [${lessonLabel}] ⚠️  Reached ${maxClicks}-click cap without detecting completion`);
+    const capShotPath = `test-results/arrow-cap-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+    await page.screenshot({ path: capShotPath, fullPage: false }).catch(() => {});
+    await test.info().attach(`arrow-cap-${lessonLabel}`, { path: capShotPath, contentType: 'image/png' }).catch(() => {});
+    await bugReport(page, `lesson-no-completion-signal-${lessonLabel.replace(/\s+/g, '-')}`,
+      `BUG: [${lessonLabel}] Lesson did not show a completion signal (feedback form / "You just completed" / TOC "Completed") ` +
+      `after ${maxClicks} arrow clicks. This likely means the lesson content completed but the app did not update the status.`
+    );
   }
 
   // ── Final: check for red alert errors ────────────────────────────────────
@@ -659,24 +750,13 @@ test.describe('Home course flow', () => {
       const progressBefore = await readProgress(page);
       console.log(`  Progress before: ${progressBefore ?? 'unknown'}%`);
 
-      // ── Check whether "You just completed" banner appears DURING consumption ─
-      // We check it right after consumeCurrentLesson returns (it may still be on screen).
+      // consumeCurrentLesson handles the feedback form internally — it captures
+      // a screenshot and reports the stale-status bug BEFORE dismissing the form.
       await consumeCurrentLesson(page, label);
-
-      // Capture the "You just completed" banner before navigating away — it's proof the
-      // lesson finished in the player. If the TOC later still shows "In Progress", that's a bug.
-      const youJustCompletedVisible = await page.locator('text=/you just completed/i')
-        .first().isVisible({ timeout: 1000 }).catch(() => false);
-      if (youJustCompletedVisible) {
-        console.log(`  [${label}] 📸 "You just completed" banner is visible — capturing screenshot as evidence`);
-        const bannerShot = `test-results/you-just-completed-${label.replace(/\s+/g, '-')}-${Date.now()}.png`;
-        await page.screenshot({ path: bannerShot, fullPage: false }).catch(() => {});
-        await test.info().attach(`you-just-completed-${label}`, { path: bannerShot, contentType: 'image/png' }).catch(() => {});
-      }
 
       await page.waitForTimeout(1000);
 
-      // Re-expand so TOC status badges are visible
+      // Re-expand so TOC status badges are visible for post-dismiss polling
       await expandAllUnits(page);
       await page.waitForTimeout(600);
 
@@ -703,21 +783,19 @@ test.describe('Home course flow', () => {
         const rawHtml = await anchor.evaluate((el: Element) => el.outerHTML).catch(() => '(unavailable)');
         console.log(`  Raw anchor HTML: ${rawHtml.substring(0, 300)}`);
 
-        // Sharper bug message if we CONFIRMED lesson end via "You just completed" banner
-        const proofLine = youJustCompletedVisible
-          ? `  The player showed "You just completed" confirming the lesson ended in the player,\n`
-          : `  Feedback form ("We would love to hear from you") confirmed lesson end,\n`;
+        // Capture a final screenshot showing the stale TOC state
+        const staleShotPath = `test-results/status-not-updated-${label.replace(/\s+/g, '-')}-${Date.now()}.png`;
+        await page.screenshot({ path: staleShotPath, fullPage: false }).catch(() => {});
+        await test.info().attach(`status-not-updated-${label}`, { path: staleShotPath, contentType: 'image/png' }).catch(() => {});
 
         const bugMsg =
           `BUG: [${label}] Lesson status did NOT update to "Completed" after the lesson was finished.\n` +
-          proofLine +
-          `  but TOC anchor still shows: "${rawTxt.substring(0, 120)}"\n` +
+          `  Feedback form ("We would love to hear from you") confirmed lesson end,\n` +
+          `  TOC anchor still shows: "${rawTxt.substring(0, 120)}"\n` +
           `  Expected: "Completed"   Got: "${statusAfter}"\n` +
           `  Lesson URL: ${href}`;
 
         await bugReport(page, `lesson-status-not-updated-${label.replace(/\s+/g, '-')}`, bugMsg);
-
-        // Fail visibly in the Playwright HTML report
         expect.soft(statusAfter, bugMsg).toBe('Completed');
       } else {
         console.log(`  ✅ [${label}] TOC shows Completed ✓`);
@@ -729,13 +807,14 @@ test.describe('Home course flow', () => {
 
       if (progressBefore !== null && progressAfter !== null) {
         if (progressAfter <= progressBefore) {
-          // Sharper message if "You just completed" confirmed the lesson end
-          const proofLine2 = youJustCompletedVisible
-            ? `  The player showed "You just completed" confirming the lesson ended,\n`
-            : `  Lesson consumption reported complete,\n`;
+          // Capture screenshot showing unchanged progress bar
+          const progShotPath = `test-results/progress-no-increase-${label.replace(/\s+/g, '-')}-${Date.now()}.png`;
+          await page.screenshot({ path: progShotPath, fullPage: false }).catch(() => {});
+          await test.info().attach(`progress-no-increase-${label}`, { path: progShotPath, contentType: 'image/png' }).catch(() => {});
+
           const progMsg =
             `BUG: [${label}] Course Progress bar did not increase after completing this lesson.\n` +
-            proofLine2 +
+            `  Feedback form ("We would love to hear from you") confirmed lesson end,\n` +
             `  Before: ${progressBefore}%  →  After: ${progressAfter}%  (no change)\n` +
             `  Lesson URL: ${href}`;
           await bugReport(page, `progress-no-increase-${label.replace(/\s+/g, '-')}`, progMsg);
@@ -765,41 +844,67 @@ test.describe('Home course flow', () => {
       console.log('ℹ️  No content lesson detected in URL — will consume first lesson from TOC');
     }
 
-    // ── THEN: collect TOC and consume remaining lessons in order ──────────
-    const lessonHrefs = await collectLessonHrefs();
+    // ── THEN: consume remaining lessons — navigate back after each one ───────
+    // After consumeCurrentLesson the player may have navigated away from the
+    // course TOC page. We always return to coursePageUrl, expand the TOC and
+    // find the NEXT lesson that is "Not viewed" or "In progress" before opening
+    // it, so we never try to click a TOC anchor that is no longer on the page.
+    let lessonIteration = 0;
+    const MAX_LESSONS = 100; // safety cap
 
-    if (lessonHrefs.length === 0) {
-      console.log('⚠️  No lesson hrefs found in TOC');
-    } else {
-      console.log(`\nLesson list from TOC (${lessonHrefs.length} total):`);
-      lessonHrefs.forEach((h, i) => console.log(`  ${i + 1}. ${h}`));
+    while (lessonIteration < MAX_LESSONS) {
+      // Go back to the course TOC page so the TOC is visible
+      await page.goto(coursePageUrl, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1500);
+      await expandAllUnits(page);
+      await page.waitForTimeout(500);
 
-      for (let idx = 0; idx < lessonHrefs.length; idx++) {
-        const href = lessonHrefs[idx];
-        const label = `Lesson-${idx + 1}`;
+      // Re-collect lesson hrefs from the freshly loaded TOC
+      const hrefs = await collectLessonHrefs();
+      if (hrefs.length === 0) {
+        console.log('⚠️  No lesson hrefs found in TOC — stopping');
+        break;
+      }
 
-        // Expand units before each lesson so the anchor is visible
-        await expandAllUnits(page);
-        await page.waitForTimeout(300);
+      if (lessonIteration === 0) {
+        console.log(`\nLesson list from TOC (${hrefs.length} total):`);
+        hrefs.forEach((h, i) => console.log(`  ${i + 1}. ${h}`));
+      }
 
-        // Read current status from the TOC
-        const statusBefore = await getLessonStatus(href);
-        console.log(`\n→ [${label}] Status: "${statusBefore}" | ${href}`);
+      // Find the first lesson that is NOT yet completed
+      let foundNext = false;
+      for (let i = 0; i < hrefs.length; i++) {
+        const href = hrefs[i];
+        const label = `Lesson-${i + 1}`;
+        const statusNow = await getLessonStatus(href);
 
-        // Only consume "In progress" and "Not viewed" lessons
-        if (statusBefore === 'Completed') {
+        console.log(`\n→ [${label}] Status: "${statusNow}" | ${href}`);
+
+        if (statusNow === 'Completed') {
           console.log(`  ↳ Already Completed — skipping`);
           continue;
         }
 
-        // Open the lesson via the TOC anchor
+        // Open this pending lesson via the TOC anchor
         await openLesson(href, label);
         await closeAnyPopup(page).catch(() => {});
 
-        // Consume all pages and verify progress updated
+        // Consume and verify, then break out to re-scan the TOC
         await consumeAndVerify(href, label);
+        foundNext = true;
+        break;
       }
-      console.log('\n✅ All lessons iterated');
+
+      if (!foundNext) {
+        console.log('\n✅ All lessons are Completed — done iterating');
+        break;
+      }
+
+      lessonIteration++;
+    }
+
+    if (lessonIteration >= MAX_LESSONS) {
+      console.warn(`⚠️  Reached MAX_LESSONS (${MAX_LESSONS}) safety cap — stopping lesson loop`);
     }
 
     // ════════════════════════════════════════════════════════════════════════

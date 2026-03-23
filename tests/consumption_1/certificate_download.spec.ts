@@ -3,7 +3,7 @@ import fs from 'fs';
 import { loginWithValidCredentials } from './helpers';
 
 test.describe('Certificate download from Profile My Learning', () => {
-  test.setTimeout(5 * 60 * 1000); // 10 min — up from 3 min to cover many courses
+  test.setTimeout(5 * 60 * 1000); // 5 min — up from 3 min to cover many courses
 
   test('login, find 100% courses and download certificate if present', async ({ page }) => {
     await loginWithValidCredentials(page);

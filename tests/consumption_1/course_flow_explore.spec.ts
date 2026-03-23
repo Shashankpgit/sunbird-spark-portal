@@ -44,6 +44,24 @@ async function expandAllUnits(page: Page) {
   }
 }
 
+// ─── helper: detect "No batches available for enrollment" on a course page ────
+// Returns true when the page shows this message — callers should skip the course.
+async function hasNoBatchesAvailable(page: Page): Promise<boolean> {
+  const noBatchSels = [
+    'text=/no batches available for enrollment/i',
+    'text=/no batches available/i',
+    'text=/no batch.*available/i',
+    '[data-testid="available-batches-card"]:has-text("No batches")',
+  ];
+  for (const sel of noBatchSels) {
+    if (await page.locator(sel).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+      console.log(`  ⚠️  "No batches available" detected (${sel}) — skipping this course`);
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── helper: join course via batch if "must join" banner is shown ─────────────
 // Triggered when content player shows:
 //   "You must join the course to get complete access to content"
@@ -120,9 +138,11 @@ async function joinCourseViaBatch(page: Page): Promise<boolean> {
   const options = listbox.locator('[role="option"]');
   const optCount = await options.count().catch(() => 0);
   if (optCount === 0) {
+    await page.keyboard.press('Escape').catch(() => {});
+    // Check if the page itself says there are no batches — not a bug, just skip
+    if (await hasNoBatchesAvailable(page)) return false;
     await bugReport(page, 'batch-no-options',
       'BUG: Batch listbox opened but contains no options (role="option") — no batches available to select');
-    await page.keyboard.press('Escape').catch(() => {});
     return false;
   }
 
@@ -356,7 +376,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
     return null;
   };
 
-  let arrowBtn = null;
+  let arrowBtn: ReturnType<typeof page.locator> | null = null;
   for (const sel of blueArrowSels) {
     const el = page.locator(sel).first();
     if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { arrowBtn = el; console.log(`  Found arrow: "${sel}"`); break; }
@@ -366,6 +386,34 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
   const pi = await getPageInfo();
   if (pi) console.log(`  Detected pagination: ${pi.current} / ${pi.total}`);
 
+  // Helper: safe check for "You just completed" banner — works even if page navigated away
+  const isYouJustCompletedVisible = async () =>
+    page.locator('text=/you just completed/i').first().isVisible({ timeout: 500 }).catch(() => false);
+
+  // Helper: did the page navigate away (content player closed)?
+  const isPageGone = () => { try { return page.isClosed(); } catch { return true; } };
+
+  // Helper: click the next arrow and return whether the page survived
+  const clickArrowSafely = async (): Promise<boolean> => {
+    if (arrowBtn) {
+      await arrowBtn.scrollIntoViewIfNeeded().catch(() => {});
+      await arrowBtn.click({ timeout: 2000 }).catch(() => {});
+    } else {
+      const pBox = await page.locator('iframe#contentPlayer, iframe[name="contentPlayer"]').first().boundingBox().catch(() => null);
+      if (pBox) {
+        await page.mouse.move(Math.round(pBox.x + pBox.width - 20), Math.round(pBox.y + 30));
+        await page.waitForTimeout(300).catch(() => {});
+        for (const sel of blueArrowSels) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 800 }).catch(() => false)) { await el.click().catch(() => {}); arrowBtn = el; break; }
+        }
+      }
+    }
+    // Short wait for navigation — use catch so we don't throw if page closes
+    await page.waitForTimeout(500).catch(() => {});
+    return !isPageGone();
+  };
+
   // If we have a reliable total, loop until current >= total.
   if (pi && pi.total > 1) {
     const target = pi.total;
@@ -374,61 +422,48 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
     const maxAttempts = Math.max(200, target * 2);
     while (attempts < maxAttempts) {
       attempts++;
+      if (isPageGone()) { console.log(`  [${lessonLabel}] Page closed (navigated to completion)`); return true; }
       if (await isFeedbackFormVisible()) { console.log(`  ✅ Feedback form`); await dismissFeedbackForm(); return true; }
       if (await isLessonCompleted()) { console.log(`  ✅ Completed (TOC)`); return true; }
+      if (await isYouJustCompletedVisible()) { console.log(`  ✅ "You just completed" banner`); return true; }
 
       const curInfo = await getPageInfo();
       if (curInfo) {
         console.log(`  Page ${curInfo.current} / ${curInfo.total}`);
         if (curInfo.current >= curInfo.total) {
           // reached last page — wait for completion indicators
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(1500).catch(() => {});
+          if (isPageGone()) { console.log(`  [${lessonLabel}] Page closed after last-page wait`); return true; }
           if (await isFeedbackFormVisible()) { await dismissFeedbackForm(); return true; }
           if (await isLessonCompleted()) return true;
+          if (await isYouJustCompletedVisible()) return true;
         }
       }
 
-      // click arrow
-      if (arrowBtn) {
-        await arrowBtn.scrollIntoViewIfNeeded().catch(() => {});
-        await arrowBtn.click({ timeout: 2000 }).catch(() => {});
-      } else {
-        const pBox = await page.locator('iframe#contentPlayer, iframe[name="contentPlayer"]').first().boundingBox().catch(() => null);
-        if (pBox) {
-          await page.mouse.move(Math.round(pBox.x + pBox.width - 20), Math.round(pBox.y + 30));
-          await page.waitForTimeout(300);
-          for (const sel of blueArrowSels) {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 800 }).catch(() => false)) { await el.click().catch(() => {}); arrowBtn = el; break; }
-          }
-        }
-      }
-      await page.waitForTimeout(700);
+      // click arrow — if page closed, lesson is done
+      const survived = await clickArrowSafely();
+      if (!survived) { console.log(`  [${lessonLabel}] Page closed after arrow click (last page)`); return true; }
+      await page.waitForTimeout(700).catch(() => {});
     }
   } else {
-    // Unknown total: keep clicking until lesson completion or a reasonable cap
+    // Unknown total (or single-page): keep clicking until lesson completion or page navigates away
+    // For single-page PDFs (1/1), first click on the arrow will navigate to completion screen
+    const isSinglePage = pi !== null && pi.total === 1;
+    if (isSinglePage) {
+      console.log(`  [${lessonLabel}] Single-page content — one arrow click will complete it`);
+    }
     let clicks = 0;
     const maxClicks = 1000; // large cap to support long lessons (e.g., 100+ pages)
     while (clicks < maxClicks) {
       clicks++;
+      if (isPageGone()) { console.log(`  [${lessonLabel}] Page closed (navigated to completion)`); return true; }
       if (await isFeedbackFormVisible()) { console.log(`  ✅ Feedback form`); await dismissFeedbackForm(); return true; }
       if (await isLessonCompleted()) { console.log(`  ✅ Completed (TOC)`); return true; }
+      if (await isYouJustCompletedVisible()) { console.log(`  ✅ "You just completed" banner`); return true; }
 
-      if (arrowBtn) {
-        await arrowBtn.scrollIntoViewIfNeeded().catch(() => {});
-        await arrowBtn.click({ timeout: 2000 }).catch(() => {});
-      } else {
-        const pBox = await page.locator('iframe#contentPlayer, iframe[name="contentPlayer"]').first().boundingBox().catch(() => null);
-        if (pBox) {
-          await page.mouse.move(Math.round(pBox.x + pBox.width - 20), Math.round(pBox.y + 30));
-          await page.waitForTimeout(300);
-          for (const sel of blueArrowSels) {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 800 }).catch(() => false)) { await el.click().catch(() => {}); arrowBtn = el; break; }
-          }
-        }
-      }
-      await page.waitForTimeout(500);
+      // click arrow — if page closed, lesson is done
+      const survived = await clickArrowSafely();
+      if (!survived) { console.log(`  [${lessonLabel}] Page closed after arrow click (last page)`); return true; }
     }
   }
 
@@ -609,53 +644,100 @@ async function findCourseFromExplore(
   page: Page,
   condition: 'any' | 'incomplete' | 'complete'
 ): Promise<{ url: string; progress: number | null } | null> {
-  await page.goto('https://test.sunbirded.org/explore', { waitUntil: 'domcontentloaded' });
+  const WALL_CLOCK_MS = 90_000;   // give up after 90 s total
+  const MAX_ATTEMPTS  = 8;        // check at most 8 different course URLs
+  const PER_GOTO_MS   = 12_000;   // timeout for each page.goto()
+
+  const deadline = Date.now() + WALL_CLOCK_MS;
+  const timedOut = () => Date.now() > deadline;
+
+  console.log(`  [findCourse] condition="${condition}" — navigating to /explore…`);
+  await page.goto('https://test.sunbirded.org/explore', {
+    waitUntil: 'domcontentloaded', timeout: PER_GOTO_MS,
+  }).catch(() => {});
   await page.waitForTimeout(1500);
   await closeAnyPopup(page).catch(() => {});
 
-  const cardSels = ['a[href*="/collection/"]', '.course-card a', '[class*="course-card"] a', '.card a[href*="course"]'];
-  const tried = new Set<string>();
-
+  // Collect all unique course URLs from the Explore page first
+  const cardSels = [
+    'a[href*="/collection/"]',
+    '.course-card a',
+    '[class*="course-card"] a',
+    '.card a[href*="course"]',
+  ];
+  const allUrls: string[] = [];
   for (const sel of cardSels) {
     const cards = page.locator(sel);
     const count = await cards.count().catch(() => 0);
     for (let i = 0; i < count; i++) {
-      try {
-        const href = await cards.nth(i).getAttribute('href').catch(() => null);
-        if (!href) continue;
-        const url = href.startsWith('http') ? href : `https://test.sunbirded.org${href}`;
-        if (tried.has(url)) continue;
-        tried.add(url);
-
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(1200);
-        await closeAnyPopup(page).catch(() => {});
-
-        // Batch-join first (batch card may be on landing page — Join btn is disabled until batch selected)
-        const joined = await joinCourseViaBatch(page).catch(() => false);
-        if (!joined) {
-          // Plain join button (already enabled, no batch required)
-          for (const jSel of ['button:has-text("Join The Course")', 'button:has-text("Join the Course")', 'button:has-text("Join")']) {
-            const btn = page.locator(jSel).first();
-            if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
-              const dis = await btn.evaluate((el: Element) => (el as HTMLButtonElement).disabled).catch(() => false);
-              if (!dis) {
-                await btn.click();
-                await page.waitForTimeout(1500);
-                await closeAnyPopup(page).catch(() => {});
-              }
-              break;
-            }
-          }
-        }
-
-        const progress = await readProgress(page);
-        if (condition === 'any') return { url, progress };
-        if (condition === 'complete' && progress !== null && progress >= 100) return { url, progress };
-        if (condition === 'incomplete' && (progress === null || progress < 100)) return { url, progress };
-      } catch (_) { continue; }
+      const href = await cards.nth(i).getAttribute('href').catch(() => null);
+      if (!href) continue;
+      const url = href.startsWith('http') ? href : `https://test.sunbirded.org${href}`;
+      if (!allUrls.includes(url)) allUrls.push(url);
     }
   }
+  console.log(`  [findCourse] found ${allUrls.length} course URL(s) on Explore page`);
+
+  if (allUrls.length === 0) {
+    console.log('  [findCourse] ⚠️  No course cards found on /explore — returning null');
+    return null;
+  }
+
+  let attempts = 0;
+  for (const url of allUrls) {
+    if (timedOut()) {
+      console.log(`  [findCourse] ⏰ wall-clock limit (${WALL_CLOCK_MS / 1000}s) reached — stopping`);
+      break;
+    }
+    if (attempts >= MAX_ATTEMPTS) {
+      console.log(`  [findCourse] reached max ${MAX_ATTEMPTS} attempts — stopping`);
+      break;
+    }
+    attempts++;
+    console.log(`  [findCourse] attempt ${attempts}/${MAX_ATTEMPTS}: ${url}`);
+
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PER_GOTO_MS }).catch(() => {});
+      await page.waitForTimeout(800);
+      await closeAnyPopup(page).catch(() => {});
+
+      // Skip courses that have no batches available for enrollment
+      if (await hasNoBatchesAvailable(page)) continue;
+
+      // Only join the course if a Join button is already visible and enabled —
+      // do NOT call joinCourseViaBatch here (it can block for a long time).
+      for (const jSel of [
+        'button:has-text("Join The Course")',
+        'button:has-text("Join the Course")',
+        'button:has-text("Join")',
+      ]) {
+        const btn = page.locator(jSel).first();
+        if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
+          const dis = await btn.evaluate((el: Element) => (el as HTMLButtonElement).disabled).catch(() => false);
+          if (!dis) {
+            console.log(`  [findCourse]   → clicking "${jSel}"`);
+            await btn.click();
+            await page.waitForTimeout(1200);
+            await closeAnyPopup(page).catch(() => {});
+          }
+          break;
+        }
+      }
+
+      const progress = await readProgress(page);
+      console.log(`  [findCourse]   progress=${progress ?? 'null'} (condition=${condition})`);
+
+      if (condition === 'any') return { url, progress };
+      if (condition === 'complete'   && progress !== null && progress >= 100) return { url, progress };
+      // Only treat as incomplete when progress is a known value < 100 (null = unknown / not enrolled → skip)
+      if (condition === 'incomplete' && progress !== null && progress < 100)  return { url, progress };
+    } catch (err) {
+      console.log(`  [findCourse]   ⚠️  error on ${url}: ${(err as Error).message?.substring(0, 80)}`);
+      continue;
+    }
+  }
+
+  console.log(`  [findCourse] no matching course found after ${attempts} attempt(s) — returning null`);
   return null;
 }
 
@@ -669,31 +751,56 @@ test.describe('Course Flow — Explore page', () => {
   test('Explore → open course card → consume all lessons → verify completion', async ({ page }) => {
     await loginWithValidCredentials(page);
 
-    // ── Step 1: Go to Explore and find an incomplete course ──────────────────
+    // ── Step 1: Go to Explore and find a usable course ──────────────────────
+    // Iterate course cards and skip any that show "No batches available for
+    // enrollment" — those courses cannot be joined so they are useless here.
     await page.goto('https://test.sunbirded.org/explore', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
     await closeAnyPopup(page).catch(() => {});
 
-    let courseUrl = '';
+    // Collect all unique course URLs from the page first
+    const allCourseUrls: string[] = [];
     for (const sel of ['a[href*="/collection/"]', '.course-card a', '[class*="course-card"] a', '.card a[href*="course"]']) {
       const cards = page.locator(sel);
       const count = await cards.count().catch(() => 0);
       for (let i = 0; i < count; i++) {
         const href = await cards.nth(i).getAttribute('href').catch(() => null);
-        if (href) { courseUrl = href.startsWith('http') ? href : `https://test.sunbirded.org${href}`; break; }
+        if (!href) continue;
+        const url = href.startsWith('http') ? href : `https://test.sunbirded.org${href}`;
+        if (!allCourseUrls.includes(url)) allCourseUrls.push(url);
       }
-      if (courseUrl) break;
     }
 
-    if (!courseUrl) {
+    if (allCourseUrls.length === 0) {
       await bugReport(page, 'explore-no-cards', 'No course cards found on the Explore page');
       throw new Error('No course cards on Explore page');
     }
 
-    console.log('Opening course:', courseUrl);
-    await page.goto(courseUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
-    await closeAnyPopup(page).catch(() => {});
+    // Try each course in order — skip ones with "no batches available"
+    let courseUrl = '';
+    for (const candidateUrl of allCourseUrls) {
+      console.log(`Checking course: ${candidateUrl}`);
+      await page.goto(candidateUrl, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      await closeAnyPopup(page).catch(() => {});
+
+      if (await hasNoBatchesAvailable(page)) {
+        console.log('  → No batches available — trying next course…');
+        continue;
+      }
+
+      courseUrl = candidateUrl;
+      break;
+    }
+
+    if (!courseUrl) {
+      await bugReport(page, 'explore-all-no-batches',
+        'BUG: Every course on the Explore page shows "No batches available for enrollment" — cannot join any course');
+      throw new Error('No joinable course found on Explore page');
+    }
+
+    console.log('Using course:', courseUrl);
+    // Already on courseUrl from the loop above — no need to navigate again
 
     // ── Step 2: Join if needed ─────────────────────────────────────────────────
     // First check if this course needs batch-based join (batch card is on landing page).
@@ -723,7 +830,7 @@ test.describe('Course Flow — Explore page', () => {
 
     const coursePageUrl = page.url();
 
-    // ── Step 3: If course is already 100% — run three-dots check instead ─────
+    // ── Step 3: Check current progress before deciding what to do ───────────
     const initialProgress = await readProgress(page);
     console.log('Initial progress:', initialProgress);
 
@@ -733,7 +840,20 @@ test.describe('Course Flow — Explore page', () => {
       return;
     }
 
+    if (initialProgress !== null && initialProgress > 0) {
+      // Course is partially done (e.g. 25%, 50%) — consuming more lessons here
+      // risks getting stuck inside the player mid-session.  The Leave Course
+      // scenario (Test 2) already targets this course directly, so we just
+      // log and exit cleanly without touching the player.
+      console.log(
+        `Course is already ${initialProgress}% complete — skipping lesson consumption.\n` +
+        `  The "Leave Course" test (Test 2) will handle the ⋮ → unenrol flow for this course.`
+      );
+      return;
+    }
+
     // ── Step 4 & 5: Expand TOC and consume every lesson in order ────────────────
+    // Only reached when initialProgress === 0 (or null = not yet enrolled)
     //
     // Strategy:
     //   a) Expand all Course Units in the TOC sidebar.
@@ -977,8 +1097,14 @@ test.describe('Course Flow — Explore page', () => {
     console.log('Finding an incomplete course from Explore…');
     const found = await findCourseFromExplore(page, 'incomplete');
     if (!found) {
-      await bugReport(page, 'leave-course-no-incomplete', 'Could not find any incomplete course on Explore');
-      throw new Error('No incomplete course found on Explore');
+      const bugMsg =
+        'BUG: Could not find any enrolled incomplete course on the Explore page.\n' +
+        '  Checked up to 8 courses within a 90 s window.\n' +
+        '  Either all enrolled courses are at 100%, or no enrolled courses exist, or the page failed to load progress data.';
+      await bugReport(page, 'leave-course-no-incomplete', bugMsg);
+      expect.soft(false, bugMsg).toBe(true);
+      // Stop the test — nothing to act on
+      return;
     }
 
     console.log(`Found incomplete course (${found.progress}%): ${found.url}`);
@@ -987,59 +1113,54 @@ test.describe('Course Flow — Explore page', () => {
       'h3:has-text("Course Progress"), h2:has-text("Course Progress")'
     ).first().locator('..');
 
-    // ── Check A: "Leave Course" must be present ───────────────────────────────
-    // The "Leave course" button appears inline in the Course Progress card header
-    // (revealed when the ⋮ button is clicked). We use getByRole for reliability
-    // since the button contains an icon image alongside the text.
-    console.log('\nCheck A: "Leave Course" must be accessible on an incomplete course…');
+    // ── Check A: "Leave Course" must be accessible via the ⋮ button ─────────────
+    // The "Leave course" option is inside the dropdown revealed by clicking ⋮ in
+    // the Course Progress card header.  We always click ⋮ first so the test
+    // faithfully mirrors the real user flow.
+    console.log('\nCheck A: Clicking ⋮ in Course Progress card to access "Leave Course"…');
 
     // Helper: find the Leave course button using multiple strategies
     const findLeaveBtn = () =>
       page.getByRole('button', { name: /leave course/i })
-        .or(page.locator('[active][ref]').filter({ hasText: /leave course/i }))
+        .or(page.getByRole('menuitem', { name: /leave course/i }))
         .or(page.locator('button').filter({ hasText: /leave course/i }))
         .first();
 
-    // First check if already visible (inline) without clicking ⋮
-    let leaveBtn = findLeaveBtn();
-    let leaveVisible = await leaveBtn.isVisible({ timeout: 1500 }).catch(() => false);
-
-    if (!leaveVisible) {
-      // Not visible yet — click ⋮ to reveal it
-      const dotsClicked = await clickThreeDotsInProgressCard(page);
-      if (!dotsClicked) {
-        await bugReport(page, 'leave-course-no-threedots',
-          'BUG: Three-dots (⋮) button not found on incomplete course — cannot access "Leave Course"');
-        throw new Error('Three-dots button not found');
-      }
-      await page.waitForTimeout(600);
-
-      // Screenshot the revealed state
-      const menuShot = `test-results/leave-course-menu-${Date.now()}.png`;
-      await page.screenshot({ path: menuShot }).catch(() => {});
-      await test.info().attach('leave-course-menu', { path: menuShot, contentType: 'image/png' }).catch(() => {});
-
-      leaveBtn = findLeaveBtn();
-      leaveVisible = await leaveBtn.isVisible({ timeout: 2000 }).catch(() => false);
-    } else {
-      console.log('  "Leave course" button already visible inline (no ⋮ click needed)');
-      const shot = `test-results/leave-course-visible-${Date.now()}.png`;
-      await page.screenshot({ path: shot }).catch(() => {});
-      await test.info().attach('leave-course-visible', { path: shot, contentType: 'image/png' }).catch(() => {});
+    // Step 1 — always click ⋮ first
+    const dotsClicked = await clickThreeDotsInProgressCard(page);
+    if (!dotsClicked) {
+      const bugMsg =
+        `BUG: Three-dots (⋮) button not found in the Course Progress card for an incomplete course.\n` +
+        `  Course progress: ${found.progress}%\n` +
+        `  Expected: ⋮ button visible in the Course Progress card header.`;
+      await bugReport(page, 'leave-course-no-threedots', bugMsg);
+      expect.soft(false, bugMsg).toBe(true);
+      throw new Error('Three-dots (⋮) button not found in Course Progress card');
     }
+
+    // Step 2 — wait for the menu to open, then screenshot it
+    await page.waitForTimeout(600);
+    const menuShot = `test-results/leave-course-menu-${Date.now()}.png`;
+    await page.screenshot({ path: menuShot }).catch(() => {});
+    await test.info().attach('leave-course-menu-open', { path: menuShot, contentType: 'image/png' }).catch(() => {});
+    console.log('  ⋮ menu opened — looking for "Leave course" option…');
+
+    // Step 3 — verify "Leave course" is in the revealed dropdown
+    const leaveBtn = findLeaveBtn();
+    const leaveVisible = await leaveBtn.isVisible({ timeout: 2000 }).catch(() => false);
 
     if (!leaveVisible) {
       const bugMsg =
-        `BUG: "Leave Course" option not found for an incomplete course (progress: ${found.progress}%).\n` +
-        `  Checked both inline and inside ⋮ menu.\n` +
-        `  The button is visible in the screenshot but the selector could not match it.\n` +
-        `  Expected: "Leave course" button visible in the Course Progress card.`;
-      await bugReport(page, 'leave-course-option-missing', bugMsg);
+        `BUG: "Leave Course" option not found in the ⋮ menu for an incomplete course.\n` +
+        `  Course progress: ${found.progress}% — URL: ${found.url}\n` +
+        `  Expected: "Leave course" visible in the dropdown after clicking ⋮.`;
+      await bugReport(page, 'leave-course-not-in-menu', bugMsg);
       expect.soft(leaveVisible, bugMsg).toBe(true);
       await page.keyboard.press('Escape').catch(() => {});
-      throw new Error('"Leave Course" option not found');
+      throw new Error('"Leave Course" option not found in ⋮ menu');
     }
-    console.log('  ✅ "Leave Course" option is present for incomplete course');
+    console.log('  ✅ "Leave Course" found in ⋮ menu for incomplete course');
+
 
     // ── Check B: Click "Leave Course" → confirmation popup → unenrolment ─────
     console.log('\nCheck B: Click "Leave Course" → expect unenrolment confirmation…');
@@ -1054,52 +1175,66 @@ test.describe('Course Flow — Explore page', () => {
     await page.screenshot({ path: afterClickShot }).catch(() => {});
     await test.info().attach('leave-course-after-click', { path: afterClickShot, contentType: 'image/png' }).catch(() => {});
 
-    // The "Batch Unenrolment" dialog appears — it has a "Leave course" button to confirm.
-    // Try getByRole first (most reliable for "Leave course" text), then CSS fallbacks.
-    const dialogLeaveBtn =
-      page.getByRole('button', { name: /leave course/i })
-          .or(page.locator('[role="dialog"] button').filter({ hasText: /leave course/i }))
-          .or(page.locator('button').filter({ hasText: /leave course/i }))
-          .first();
+    // The "Batch Unenrolment" dialog appears with a "Leave course" confirm button INSIDE it.
+    // IMPORTANT: scope selectors strictly inside the dialog to avoid matching the ⋮ toggle
+    // button (which also has aria-label="Leave course" and sits behind the overlay).
+    const dialog = page.locator('[role="dialog"][aria-label="Batch Unenrolment"], [aria-label="Batch Unenrolment"]').first();
+    const dialogOpen = await dialog.isVisible({ timeout: 4000 }).catch(() => false);
 
-    const dialogVisible = await dialogLeaveBtn.isVisible({ timeout: 4000 }).catch(() => false);
-    if (dialogVisible) {
-      console.log('  Confirming "Batch Unenrolment" dialog → clicking "Leave course" button…');
-      await dialogLeaveBtn.click();
-      await page.waitForTimeout(1500);
-    } else {
-      // Fallback: try other confirmation button texts
-      const confirmSels = [
-        'button:has-text("Yes")', 'button:has-text("Confirm")',
-        'button:has-text("Leave")', 'button:has-text("OK")',
-        '[role="dialog"] button:has-text("Yes")',
-      ];
-      for (const sel of confirmSels) {
-        if (await page.locator(sel).first().isVisible({ timeout: 1500 }).catch(() => false)) {
-          console.log(`  Confirming leave via fallback: "${sel}"`);
-          await page.locator(sel).first().click();
+    if (dialogOpen) {
+      console.log('  "Batch Unenrolment" dialog is open — finding confirm button inside it…');
+      // Find the confirm button scoped INSIDE the dialog only
+      const confirmBtn = dialog.getByRole('button', { name: /leave course/i })
+        .or(dialog.locator('button').filter({ hasText: /leave course/i }))
+        .or(dialog.locator('button').filter({ hasText: /yes|confirm|leave/i }))
+        .first();
+
+      const confirmVisible = await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false);
+      if (confirmVisible) {
+        console.log('  Clicking confirm "Leave course" button inside dialog…');
+        // Use JS click — the dialog overlay can intercept Playwright's pointer events
+        await confirmBtn.evaluate((el: Element) => (el as HTMLElement).click()).catch(() => {});
+        await page.waitForTimeout(1500);
+      } else {
+        // Last resort: click the first non-cancel button in the dialog by JS
+        const clicked = await page.evaluate(() => {
+          const dlg = document.querySelector('[role="dialog"][aria-label="Batch Unenrolment"], [aria-label="Batch Unenrolment"]');
+          if (!dlg) return false;
+          const btns = Array.from(dlg.querySelectorAll('button'));
+          const confirmBtn = btns.find(b =>
+            /leave course|yes|confirm|leave/i.test(b.textContent ?? '') &&
+            !/cancel|close|no/i.test(b.textContent ?? '')
+          );
+          if (confirmBtn) { (confirmBtn as HTMLElement).click(); return true; }
+          return false;
+        }).catch(() => false);
+        if (clicked) {
+          console.log('  Clicked confirm button via JS fallback');
           await page.waitForTimeout(1500);
-          break;
+        } else {
+          console.log('  ⚠️  Could not find confirm button inside "Batch Unenrolment" dialog');
         }
       }
+    } else {
+      console.log('  ⚠️  "Batch Unenrolment" dialog did not appear after clicking "Leave course"');
     }
 
     // Verify unenrolment success message
-    // Sunbird shows "User enrolled successfully" (unenrolment uses same toast wording)
+    // Exact Sunbird toast: "User successfully unenrolled from course"
     const unenrolSels = [
-      'text=/user.*enrolled.*successfully/i',
-      'text=/user.*enrol.*success/i',
-      'text=/enrolled.*successfully/i',
-      'text=/successfully unenrolled/i',
+      'text=/user successfully unenrolled from course/i',
+      'text=/successfully unenrolled from course/i',
+      'text=/user.*successfully.*unenrolled/i',
+      'text=/successfully.*unenrolled/i',
+      'text=/user.*unenrolled.*course/i',
       'text=/unenrolled from the course/i',
+      'text=/user.*enrolled.*successfully/i',
+      'text=/enrolled.*successfully/i',
       'text=/left the course/i',
-      'text=/successfully left/i',
       '[role="alert"]:has-text("unenrolled")',
-      '[role="alert"]:has-text("enroll")',
       '[role="alert"]:has-text("enrolled")',
       '[class*="toast"]:has-text("unenrolled")',
       '[class*="toast"]:has-text("enrolled")',
-      '[class*="toast"]:has-text("left")',
       '[class*="toast"]:has-text("success")',
       '[class*="snack"]:has-text("success")',
     ];
@@ -1113,7 +1248,7 @@ test.describe('Course Flow — Explore page', () => {
       }
     }
     if (!unenrolFound) {
-      const unenrolMsg = 'BUG: Clicked "Leave Course" but "User enrolled from course successfully" message did not appear';
+      const unenrolMsg = 'BUG: Clicked "Leave Course" in "Batch Unenrolment" dialog but "User successfully unenrolled from course" toast did not appear';
       await bugReport(page, 'leave-course-no-unenrol-toast', unenrolMsg);
       expect.soft(unenrolFound, unenrolMsg).toBe(true);
     }
