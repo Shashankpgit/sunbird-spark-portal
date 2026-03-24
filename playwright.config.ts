@@ -82,14 +82,34 @@ export default defineConfig({
     },
 
     /* Test against mobile viewports. */
-    // {
-    //   name: 'Mobile Chrome',
-    //   use: { ...devices['Pixel 5'] },
-    // },
-    // {
-    //   name: 'Mobile Safari',
-    //   use: { ...devices['iPhone 12'] },
-    // },
+    {
+      name: 'Mobile Chrome',
+      use: { ...devices['Pixel 5'] },
+    },
+    {
+      name: 'Mobile Safari',
+      use: { ...devices['iPhone 12'] },
+    },
+
+    // ── Mobile full flow (same 4 steps, Pixel 5 viewport) ─────────────────
+    // Usage: npx playwright test --project=mobile-full-flow --headed
+    {
+      name: 'mobile-step-2-home',
+      use: { ...devices['Pixel 5'] },
+      testMatch: '**/consumption_1/home_course_flow.spec.ts',
+    },
+    {
+      name: 'mobile-step-3-explore',
+      use: { ...devices['Pixel 5'] },
+      testMatch: '**/consumption_1/course_flow_explore.spec.ts',
+      dependencies: ['mobile-step-2-home'],
+    },
+    {
+      name: 'mobile-full-flow',
+      use: { ...devices['Pixel 5'] },
+      testMatch: '**/consumption_1/certificate_download.spec.ts',
+      dependencies: ['mobile-step-3-explore'],
+    },
 
     /* Test against branded browsers. */
     // {

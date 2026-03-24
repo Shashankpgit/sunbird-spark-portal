@@ -227,7 +227,76 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
     console.log(`  [${lessonLabel}] ⚠️  TOC did not show Completed within 6 s of feedback dismiss`);
   };
 
-  // ── Helper: check if active lesson row in TOC shows "Completed" ───────────
+  // ── Helper: "You just completed" detected — screenshot + bug check ─────────
+  // Called every time the "You just completed" banner is seen. Takes a screenshot
+  // of the banner alongside the TOC, checks if the lesson status is still stale,
+  // and files a bug report if it is. Pass the current page URL as lessonHref.
+  const handleYouJustCompleted = async (lessonHref?: string) => {
+    console.log(`  [${lessonLabel}] 📸 "You just completed" banner visible — capturing state`);
+    const shotPath = `test-results/you-just-completed-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+    await page.screenshot({ path: shotPath, fullPage: false }).catch(() => {});
+    await test.info().attach(`you-just-completed-${lessonLabel}`, { path: shotPath, contentType: 'image/png' }).catch(() => {});
+
+    // Read the TOC status for this specific lesson right now
+    let statusNow: string | null = null;
+    if (lessonHref) {
+      const rel = lessonHref.replace('https://test.sunbirded.org', '');
+      const anchor = page.locator(`a[href="${lessonHref}"], a[href="${rel}"]`).first();
+      if (await anchor.isVisible({ timeout: 1500 }).catch(() => false)) {
+        // Strategy 1: last span (the status badge)
+        statusNow = await anchor.evaluate((el: Element): string => {
+          const spans = Array.from(el.querySelectorAll('span, small, [class*="status"], [class*="badge"]'));
+          const last = spans[spans.length - 1];
+          return last?.textContent?.trim() ?? el.textContent?.trim() ?? '';
+        }).catch(() => '');
+        if (/completed/i.test(statusNow ?? '')) statusNow = 'Completed';
+        else if (/in\s*progress/i.test(statusNow ?? '')) statusNow = 'In progress';
+        else if (/not\s*view/i.test(statusNow ?? '')) statusNow = 'Not viewed';
+        else {
+          // Strategy 2: all spans
+          const allSpans = await anchor.evaluate((el: Element): string =>
+            Array.from(el.querySelectorAll('span, small')).map(s => s.textContent?.trim() ?? '').join('|')
+          ).catch(() => '');
+          if (/completed/i.test(allSpans)) statusNow = 'Completed';
+          else if (/in\s*progress/i.test(allSpans)) statusNow = 'In progress';
+          else if (/not\s*view/i.test(allSpans)) statusNow = 'Not viewed';
+          else {
+            // Strategy 3: full textContent
+            const full = (await anchor.textContent().catch(() => ''))?.trim() ?? '';
+            if (/completed/i.test(full)) statusNow = 'Completed';
+            else if (/in\s*progress/i.test(full)) statusNow = 'In progress';
+            else if (/not\s*view/i.test(full)) statusNow = 'Not viewed';
+            else statusNow = full.substring(0, 60) || null;
+          }
+        }
+      }
+    }
+
+    // Read the progress %
+    const progressNow: number | null = await page.evaluate((): number | null => {
+      const bar = document.querySelector('[aria-valuenow][role="progressbar"], [aria-valuenow][class*="progress"]');
+      if (bar) return parseInt((bar as HTMLElement).getAttribute('aria-valuenow') ?? '', 10) || null;
+      const match = document.body.innerText.match(/\b(\d{1,3})%/);
+      return match ? parseInt(match[1], 10) : null;
+    }).catch(() => null);
+
+    console.log(`  [${lessonLabel}] While "You just completed" visible — status="${statusNow ?? '(anchor not found)'}", progress=${progressNow ?? 'unknown'}%`);
+
+    // Report lesson status bug
+    if (statusNow !== null && statusNow !== 'Completed') {
+      const bugMsg =
+        `BUG: [${lessonLabel}] Lesson status not updated to "Completed" even while the ` +
+        `"You just completed" banner is visible.\n` +
+        `  The "You just completed" banner confirms the lesson has been fully consumed,\n` +
+        `  but the TOC still shows: "${statusNow}".\n` +
+        `  Course Progress bar shows: ${progressNow ?? 'unknown'}%.\n` +
+        `  Screenshot attached ("you-just-completed-${lessonLabel}") shows the banner + stale TOC side-by-side.\n` +
+        `  Lesson URL: ${lessonHref ?? '(unknown)'}`;
+      console.log(`  🐛 ${bugMsg}`);
+      await bugReport(page, `lesson-status-stale-you-just-completed-${lessonLabel.replace(/\s+/g, '-')}`, bugMsg);
+      expect.soft(statusNow, bugMsg).toBe('Completed');
+    }
+  };
   const isLessonCompleted = async () => {
     return await page.locator(
       '[class*="active"] span:has-text("Completed"), ' +
@@ -244,6 +313,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
   // If "You just completed" banner is visible — lesson is done
   if (await isYouJustCompletedVisible()) {
     console.log(`  [${lessonLabel}] "You just completed" banner visible on entry — lesson done`);
+    await handleYouJustCompleted(page.url());
     return true;
   }
 
@@ -327,13 +397,18 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
 
         // ── Poll for completion (feedback form OR TOC status) ─────────────
         const videoDeadline = Date.now() + 10 * 60 * 1000;
+        let lastPageText = '';
+        let lastPageTextChangedAt = Date.now();
+        const STUCK_TIMEOUT_MS = 60_000; // 1 minute with no DOM change = stuck
+
         while (Date.now() < videoDeadline) {
-          // Re-apply 2x speed every 30s in case the player resets it
-          if (ytFrame) {
+          // Re-apply 2x speed every poll in case the player resets it
+          for (const fr of [page as any, ...page.frames()]) {
             try {
-              await ytFrame.evaluate(() => {
-                const v = document.querySelector('video') as HTMLVideoElement | null;
-                if (v && v.playbackRate !== 2) v.playbackRate = 2;
+              await fr.evaluate(() => {
+                document.querySelectorAll('video').forEach((v: HTMLVideoElement) => {
+                  if (v.playbackRate !== 2) v.playbackRate = 2;
+                });
               });
             } catch (_) {}
           }
@@ -345,12 +420,36 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
           }
           if (await isYouJustCompletedVisible()) {
             console.log(`  [${lessonLabel}] ✅ "You just completed" banner — video lesson done`);
+            await handleYouJustCompleted(page.url());
             return true;
           }
           if (await isLessonCompleted()) {
             console.log(`  [${lessonLabel}] ✅ Video lesson Completed (TOC)`);
             return true;
           }
+
+          // ── Stuck detection: if page text hasn't changed in 60s → report & bail ──
+          const currentPageText = await page.evaluate(() =>
+            document.body.innerText.substring(0, 500)
+          ).catch(() => '');
+          if (currentPageText !== lastPageText) {
+            lastPageText = currentPageText;
+            lastPageTextChangedAt = Date.now();
+          } else if (Date.now() - lastPageTextChangedAt > STUCK_TIMEOUT_MS) {
+            console.log(`  [${lessonLabel}] ⚠️  Page unchanged for 60s — lesson appears stuck`);
+            const stuckShotPath = `test-results/stuck-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+            await page.screenshot({ path: stuckShotPath, fullPage: false }).catch(() => {});
+            await test.info().attach(`stuck-${lessonLabel}`, { path: stuckShotPath, contentType: 'image/png' }).catch(() => {});
+            await bugReport(page, `lesson-stuck-${lessonLabel.replace(/\s+/g, '-')}`,
+              `BUG: [${lessonLabel}] Lesson player was stuck on the same screen for over 60 seconds.\n` +
+              `  The video may have completed but the app did not show the "You just completed" banner\n` +
+              `  or update the TOC status to "Completed".\n` +
+              `  Screenshot attached shows the stuck state.\n` +
+              `  Lesson URL: ${page.url()}`
+            );
+            return true; // move on to next lesson
+          }
+
           await page.waitForTimeout(3000);
         }
         return true;
@@ -434,9 +533,10 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
   if (pi && pi.total > 1) {
     // ── Known total: iterate until current page reaches total ──────────────
     const target = pi.total;
-    // Allow up to 2× the total page count as clicks, capped at 200
     const maxAttempts = Math.min(200, Math.max(50, target * 2));
     let attempts = 0;
+    let lastArrowText = '';
+    let lastArrowTextChangedAt = Date.now();
     while (attempts < maxAttempts) {
       attempts++;
       if (await isFeedbackFormVisible()) {
@@ -444,6 +544,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
         await dismissFeedbackForm(page.url());
         return true;
       }
+      if (await isYouJustCompletedVisible()) { await handleYouJustCompleted(page.url()); return true; }
       if (await isLessonCompleted()) {
         console.log(`  [${lessonLabel}] ✅ Completed (TOC)`);
         return true;
@@ -452,23 +553,37 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
       if (cur) {
         console.log(`  [${lessonLabel}] Page ${cur.current} / ${cur.total}`);
         if (cur.current >= cur.total) {
-          // On last page — wait for app to mark Completed
           await page.waitForTimeout(1500);
           if (await isFeedbackFormVisible()) { await dismissFeedbackForm(page.url()); return true; }
-          if (await isYouJustCompletedVisible()) { console.log(`  [${lessonLabel}] ✅ "You just completed" banner`); return true; }
+          if (await isYouJustCompletedVisible()) { await handleYouJustCompleted(page.url()); return true; }
           if (await isLessonCompleted()) return true;
         }
+      }
+      // Stuck detection: page text unchanged for 60s
+      const curText = await page.evaluate(() => document.body.innerText.substring(0, 500)).catch(() => '');
+      if (curText !== lastArrowText) { lastArrowText = curText; lastArrowTextChangedAt = Date.now(); }
+      else if (Date.now() - lastArrowTextChangedAt > 60_000) {
+        console.log(`  [${lessonLabel}] ⚠️  Page unchanged for 60s in arrow loop — stuck`);
+        const stuckShotPath = `test-results/stuck-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+        await page.screenshot({ path: stuckShotPath, fullPage: false }).catch(() => {});
+        await test.info().attach(`stuck-${lessonLabel}`, { path: stuckShotPath, contentType: 'image/png' }).catch(() => {});
+        await bugReport(page, `lesson-stuck-${lessonLabel.replace(/\s+/g, '-')}`,
+          `BUG: [${lessonLabel}] Lesson player was stuck on the same screen for over 60 seconds.\n` +
+          `  The content may have completed but the app did not update the TOC status.\n` +
+          `  Screenshot attached shows the stuck state.\n` +
+          `  Lesson URL: ${page.url()}`
+        );
+        return true;
       }
       await clickArrow();
       await page.waitForTimeout(700);
     }
   } else {
     // ── Unknown total: keep clicking until Completed or cap ────────────────
-    // Cap at 50 clicks — if a lesson hasn't completed by then, something is
-    // wrong with detection (e.g. video content fell through to this path).
-    // After the cap, take a screenshot, report the stale status, and move on.
     const maxClicks = 50;
     let clicks = 0;
+    let lastUnknownText = '';
+    let lastUnknownTextChangedAt = Date.now();
     while (clicks < maxClicks) {
       clicks++;
       if (await isFeedbackFormVisible()) {
@@ -478,6 +593,7 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
       }
       if (await isYouJustCompletedVisible()) {
         console.log(`  [${lessonLabel}] ✅ "You just completed" banner — lesson done`);
+        await handleYouJustCompleted(page.url());
         return true;
       }
       if (await isLessonCompleted()) {
@@ -490,9 +606,25 @@ async function consumeCurrentLesson(page: Page, lessonLabel: string): Promise<bo
         if (cur.current >= cur.total) {
           await page.waitForTimeout(1500);
           if (await isFeedbackFormVisible()) { await dismissFeedbackForm(page.url()); return true; }
-          if (await isYouJustCompletedVisible()) { console.log(`  [${lessonLabel}] ✅ "You just completed" banner`); return true; }
+          if (await isYouJustCompletedVisible()) { await handleYouJustCompleted(page.url()); return true; }
           if (await isLessonCompleted()) return true;
         }
+      }
+      // Stuck detection: page text unchanged for 60s
+      const curText = await page.evaluate(() => document.body.innerText.substring(0, 500)).catch(() => '');
+      if (curText !== lastUnknownText) { lastUnknownText = curText; lastUnknownTextChangedAt = Date.now(); }
+      else if (Date.now() - lastUnknownTextChangedAt > 60_000) {
+        console.log(`  [${lessonLabel}] ⚠️  Page unchanged for 60s in arrow loop — stuck`);
+        const stuckShotPath = `test-results/stuck-${lessonLabel.replace(/\s+/g, '-')}-${Date.now()}.png`;
+        await page.screenshot({ path: stuckShotPath, fullPage: false }).catch(() => {});
+        await test.info().attach(`stuck-${lessonLabel}`, { path: stuckShotPath, contentType: 'image/png' }).catch(() => {});
+        await bugReport(page, `lesson-stuck-${lessonLabel.replace(/\s+/g, '-')}`,
+          `BUG: [${lessonLabel}] Lesson player was stuck on the same screen for over 60 seconds.\n` +
+          `  The content may have completed but the app did not update the TOC status.\n` +
+          `  Screenshot attached shows the stuck state.\n` +
+          `  Lesson URL: ${page.url()}`
+        );
+        return true;
       }
       await clickArrow();
       await page.waitForTimeout(500);
