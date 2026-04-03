@@ -10,6 +10,7 @@ import { redirectTenant } from './controllers/tenantController.js';
 import { loadTenants } from './services/tenantService.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { promises as fs } from 'fs';
 import { checkHealth } from './controllers/healthController.js';
 import helmet from 'helmet';
 import authRoutes from './routes/userAuthInfoRoutes.js';
@@ -20,6 +21,7 @@ import portalAnonymousProxyRoutes from './routes/portalAnonymousProxyRoutes.js';
 import knowlgMwProxyRoutes from './routes/knowlgMwProxyRoutes.js';
 import anonymousActionRoutes from './routes/anonymousActionRoutes.js';
 import mobileRoutes from './routes/mobileRoutes.js';
+import { buildInfo } from './services/buildInfo.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +33,9 @@ app.use(helmet({ contentSecurityPolicy: false }));
 
 loadTenants();
 app.use(cors());
+// Override body limit for telemetry BEFORE the global 100KB default parser.
+// The SDK can flush large batches; 10mb gives ample headroom above the ~40KB typical max.
+app.use('/action/data/v3/telemetry', express.json({ limit: '10mb' }));
 app.use(express.json());
 app.use(express.urlencoded());
 app.get('/health', checkHealth);
@@ -51,14 +56,30 @@ app.use('/data/v1/form', formRoutes);
 app.use('/portal/user/v1/auth', sessionMiddleware, ...anonymousMiddlewares, oidcSession(), authRoutes);
 app.use('/google', googleRoutes);
 
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
-// Specific /action endpoints must always proxy to kong.
-app.use("/action", editorRoutes);
+// Intercept preview.html to substitute the BUILD_NUMBER placeholder with the
+// actual build hash. The ECML renderer uses this value for cache-busting plugin
+// asset URLs — without substitution, the literal string "BUILD_NUMBER" appears
+// in every asset URL instead of the real hash.
+app.get('/content/preview/preview.html', async (_req, res) => {
+    const previewPath = path.join(__dirname, 'public', 'content', 'preview', 'preview.html');
+    try {
+        const html = await fs.readFile(previewPath, 'utf8');
+        const patched = html.replace(/BUILD_NUMBER/g, buildInfo.buildHash);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(patched);
+    } catch {
+        res.status(404).send('Not found');
+    }
+});
 
-// Anonymous-safe /action/* routes — registered BEFORE the authenticated catch-all.
-// Allows the Sunbird Telemetry JS SDK to POST /action/data/v3/telemetry for
-// anonymous/guest users without needing OIDC tokens.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
+// Anonymous-safe /action/* routes — registered BEFORE editorRoutes so that
+// POST /action/data/v3/telemetry is NOT intercepted by editorRoutes' requireAuth().
 app.use('/action', sessionMiddleware, ...anonymousMiddlewares, anonymousActionRoutes);
+
+// Specific /action endpoints (editor, review comments) — require authentication.
+app.use("/action", editorRoutes);
 
 // All remaining /action/* routes proxy to knowledge-mw-service.
 // oidcSession() deserializes the OIDC tokens from the session so that
