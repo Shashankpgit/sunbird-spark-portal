@@ -46,6 +46,7 @@ export interface EcmlPlayerConfig {
       showReplay?: boolean;
     };
     enableTelemetryValidation: boolean;
+    buildNumber?: string;
   };
   metadata: EcmlPlayerMetadata;
   data: Record<string, any>;

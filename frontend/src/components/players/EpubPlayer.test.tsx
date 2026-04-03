@@ -1,64 +1,57 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
-import { EpubPlayer } from './EpubPlayer';
-import type { EpubPlayerMetadata } from '../../services/players/epub';
+import { EcmlPlayer } from './EcmlPlayer';
+import type { EcmlPlayerMetadata } from '../../services/players/ecml';
 
-// Create mock service methods
 const mockCreateConfig = vi.fn();
-const mockCreateElement = vi.fn();
-const mockAttachEventListeners = vi.fn();
-const mockRemoveEventListeners = vi.fn();
+const mockBuildPlayerUrl = vi.fn();
 
-// Mock the EpubPlayerService
-vi.mock('../../services/players/epub', () => {
-  const MockEpubPlayerService: any = vi.fn(function(this: any) {
+vi.mock('../../services/players/ecml', () => {
+  const MockEcmlPlayerService = vi.fn(function (this: any) {
     this.createConfig = mockCreateConfig;
-    this.createElement = mockCreateElement;
-    this.attachEventListeners = mockAttachEventListeners;
-    this.removeEventListeners = mockRemoveEventListeners;
+    this.buildPlayerUrl = mockBuildPlayerUrl;
   });
-  
-  MockEpubPlayerService.unloadStyles = vi.fn();
-  
+
   return {
-    EpubPlayerService: MockEpubPlayerService,
+    EcmlPlayerService: MockEcmlPlayerService,
   };
 });
 
-describe('EpubPlayer', () => {
-  let mockPlayerElement: HTMLElement;
+describe('EcmlPlayer', () => {
+  const mockMetadata: EcmlPlayerMetadata = {
+    identifier: 'test-ecml-123',
+    name: 'Test ECML Content',
+    artifactUrl: 'https://example.com/content.ecar',
+  };
 
-  const mockMetadata: EpubPlayerMetadata = {
-    identifier: 'test-content-123',
-    name: 'Test EPUB Book',
-    artifactUrl: 'https://example.com/book.epub',
+  const mockConfig = {
+    context: { mode: 'play', contentId: 'test-ecml-123' },
+    config: { apislug: '/action' },
+    metadata: mockMetadata,
+    data: {},
   };
 
   beforeEach(() => {
-    // Create mock player element
-    mockPlayerElement = document.createElement('div');
-    mockPlayerElement.setAttribute('data-player-id', 'test-content-123');
-
-    // Setup default mock behavior
-    mockCreateConfig.mockResolvedValue({
-      context: { mode: 'play' },
-      config: {},
-      metadata: mockMetadata,
-    });
-    mockCreateElement.mockReturnValue(mockPlayerElement);
+    mockCreateConfig.mockResolvedValue(mockConfig);
+    mockBuildPlayerUrl.mockReturnValue('/content/preview/preview.html?webview=true');
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it('should render without crashing', () => {
-    const { container } = render(<EpubPlayer metadata={mockMetadata} />);
-    expect(container.querySelector('div')).toBeInTheDocument();
+  it('should render an iframe with correct attributes', () => {
+    const { container } = render(<EcmlPlayer metadata={mockMetadata} />);
+    const iframe = container.querySelector('iframe');
+
+    expect(iframe).toBeInTheDocument();
+    expect(iframe?.id).toBe('contentPlayer');
+    expect(iframe?.name).toBe('contentPlayer');
+    expect(iframe?.title).toBe('Content Player');
   });
 
-  it('should create config with metadata only when no optional props provided', async () => {
-    render(<EpubPlayer metadata={mockMetadata} />);
+  it('should create config with metadata only when no optional props', async () => {
+    render(<EcmlPlayer metadata={mockMetadata} />);
 
     await waitFor(() => {
       expect(mockCreateConfig).toHaveBeenCalledWith(mockMetadata, undefined);
@@ -72,7 +65,7 @@ describe('EpubPlayer', () => {
     const objectRollup = { l1: 'test-object' };
 
     render(
-      <EpubPlayer
+      <EcmlPlayer
         metadata={mockMetadata}
         mode={mode}
         cdata={cdata}
@@ -91,78 +84,24 @@ describe('EpubPlayer', () => {
     });
   });
 
-  it('should create player element and append to container', async () => {
-    const { container } = render(<EpubPlayer metadata={mockMetadata} />);
+  it('should set iframe src from buildPlayerUrl', async () => {
+    const { container } = render(<EcmlPlayer metadata={mockMetadata} />);
 
     await waitFor(() => {
-      expect(mockCreateElement).toHaveBeenCalled();
-      expect(container.querySelector('div')?.contains(mockPlayerElement)).toBe(true);
+      const iframe = container.querySelector('iframe');
+      expect(iframe?.src).toContain('/content/preview/preview.html?webview=true');
     });
-  });
-
-  it('should attach event listeners', async () => {
-    const onPlayerEvent = vi.fn();
-    const onTelemetryEvent = vi.fn();
-
-    render(
-      <EpubPlayer
-        metadata={mockMetadata}
-        onPlayerEvent={onPlayerEvent}
-        onTelemetryEvent={onTelemetryEvent}
-      />
-    );
-
-    await waitFor(() => {
-      expect(mockAttachEventListeners).toHaveBeenCalledWith(
-        mockPlayerElement,
-        expect.any(Function),
-        expect.any(Function)
-      );
-    });
-  });
-
-  it('should call onPlayerEvent when player event is triggered', async () => {
-    const onPlayerEvent = vi.fn();
-    let capturedHandler: any;
-
-    mockAttachEventListeners.mockImplementation((_element: any, handler: any) => {
-      capturedHandler = handler;
-    });
-
-    render(<EpubPlayer metadata={mockMetadata} onPlayerEvent={onPlayerEvent} />);
-
-    await waitFor(() => {
-      expect(mockAttachEventListeners).toHaveBeenCalled();
-    });
-
-    // Simulate player event
-    const mockEvent = { type: 'START', data: {}, playerId: 'test', timestamp: Date.now() };
-    capturedHandler(mockEvent);
-
-    expect(onPlayerEvent).toHaveBeenCalledWith(mockEvent);
-  });
-
-  it('should cleanup on unmount', async () => {
-    const { unmount } = render(<EpubPlayer metadata={mockMetadata} />);
-
-    await waitFor(() => {
-      expect(mockCreateElement).toHaveBeenCalled();
-    });
-
-    unmount();
-
-    expect(mockRemoveEventListeners).toHaveBeenCalledWith(mockPlayerElement);
   });
 
   it('should handle initialization errors gracefully', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockCreateConfig.mockRejectedValue(new Error('Failed to create config'));
 
-    render(<EpubPlayer metadata={mockMetadata} />);
+    render(<EcmlPlayer metadata={mockMetadata} />);
 
     await waitFor(() => {
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'Failed to initialize EPUB player:',
+        'Failed to initialize ECML player:',
         expect.any(Error)
       );
     });
@@ -170,7 +109,7 @@ describe('EpubPlayer', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('should not append player if component unmounts before config is created', async () => {
+  it('should not set iframe src if component unmounts before config resolves', async () => {
     let resolveConfig: any;
     mockCreateConfig.mockReturnValue(
       new Promise((resolve) => {
@@ -178,31 +117,20 @@ describe('EpubPlayer', () => {
       })
     );
 
-    const { unmount } = render(<EpubPlayer metadata={mockMetadata} />);
+    const { unmount, container } = render(<EcmlPlayer metadata={mockMetadata} />);
 
-    // Unmount before config resolves
     unmount();
 
-    // Resolve config after unmount
-    resolveConfig({
-      context: { mode: 'play' },
-      config: {},
-      metadata: mockMetadata,
-    });
+    resolveConfig(mockConfig);
 
     await waitFor(() => {
-      expect(mockCreateElement).not.toHaveBeenCalled();
+      const iframe = container.querySelector('iframe');
+      expect(iframe?.src || '').not.toContain('preview.html');
     });
   });
 
   it('should only include defined optional props in contextProps', async () => {
-    render(
-      <EpubPlayer
-        metadata={mockMetadata}
-        mode="play"
-        // cdata, contextRollup, objectRollup not provided
-      />
-    );
+    render(<EcmlPlayer metadata={mockMetadata} mode="play" />);
 
     await waitFor(() => {
       expect(mockCreateConfig).toHaveBeenCalledWith(mockMetadata, {
@@ -211,33 +139,240 @@ describe('EpubPlayer', () => {
     });
   });
 
-  it('should re-initialize player when metadata changes', async () => {
-    const { rerender } = render(<EpubPlayer metadata={mockMetadata} />);
+  it('should cleanup message listener on unmount', async () => {
+    const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener');
+
+    const { unmount } = render(<EcmlPlayer metadata={mockMetadata} />);
 
     await waitFor(() => {
-      expect(mockCreateConfig).toHaveBeenCalledTimes(1);
+      expect(mockCreateConfig).toHaveBeenCalled();
     });
 
-    const newMetadata = { ...mockMetadata, identifier: 'new-content-456' };
-    rerender(<EpubPlayer metadata={newMetadata} />);
+    unmount();
 
-    await waitFor(() => {
-      expect(mockCreateConfig).toHaveBeenCalledTimes(2);
-      expect(mockCreateConfig).toHaveBeenCalledWith(newMetadata, undefined);
-    });
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('message', expect.any(Function));
+    removeEventListenerSpy.mockRestore();
   });
 
-  it('should re-initialize player when optional props change', async () => {
-    const { rerender } = render(<EpubPlayer metadata={mockMetadata} mode="play" />);
+  it('should cleanup renderer:telemetry:event listener on unmount', async () => {
+    const { container, unmount } = render(<EcmlPlayer metadata={mockMetadata} />);
+    const iframe = container.querySelector('iframe')!;
+    const removeEventListenerSpy = vi.spyOn(iframe, 'removeEventListener');
 
     await waitFor(() => {
-      expect(mockCreateConfig).toHaveBeenCalledTimes(1);
+      expect(mockCreateConfig).toHaveBeenCalled();
     });
 
-    rerender(<EpubPlayer metadata={mockMetadata} mode="preview" />);
+    unmount();
+
+    expect(removeEventListenerSpy).toHaveBeenCalledWith(
+      'renderer:telemetry:event',
+      expect.any(Function)
+    );
+    removeEventListenerSpy.mockRestore();
+  });
+
+  it('should handle renderer:telemetry:event CustomEvent on iframe', async () => {
+    const onPlayerEvent = vi.fn();
+    const onTelemetryEvent = vi.fn();
+
+    const { container } = render(
+      <EcmlPlayer
+        metadata={mockMetadata}
+        onPlayerEvent={onPlayerEvent}
+        onTelemetryEvent={onTelemetryEvent}
+      />
+    );
 
     await waitFor(() => {
-      expect(mockCreateConfig).toHaveBeenCalledTimes(2);
+      expect(mockCreateConfig).toHaveBeenCalled();
     });
+
+    const iframe = container.querySelector('iframe')!;
+    iframe.dispatchEvent(
+      new CustomEvent('renderer:telemetry:event', {
+        detail: { telemetryData: { eid: 'START', edata: { type: 'content' } } },
+      })
+    );
+
+    expect(onPlayerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'START',
+        playerId: 'test-ecml-123',
+      })
+    );
+    expect(onTelemetryEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eid: 'START' })
+    );
+  });
+
+  it('should handle renderer:telemetry:event without telemetryData wrapper', async () => {
+    const onPlayerEvent = vi.fn();
+    const onTelemetryEvent = vi.fn();
+
+    const { container } = render(
+      <EcmlPlayer
+        metadata={mockMetadata}
+        onPlayerEvent={onPlayerEvent}
+        onTelemetryEvent={onTelemetryEvent}
+      />
+    );
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    const iframe = container.querySelector('iframe')!;
+    iframe.dispatchEvent(
+      new CustomEvent('renderer:telemetry:event', {
+        detail: { eid: 'INTERACT', edata: { type: 'TOUCH' } },
+      })
+    );
+
+    expect(onPlayerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'INTERACT',
+        playerId: 'test-ecml-123',
+      })
+    );
+    expect(onTelemetryEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eid: 'INTERACT' })
+    );
+  });
+
+  it('should ignore renderer:telemetry:event with empty detail', async () => {
+    const onPlayerEvent = vi.fn();
+
+    const { container } = render(
+      <EcmlPlayer metadata={mockMetadata} onPlayerEvent={onPlayerEvent} />
+    );
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    const iframe = container.querySelector('iframe')!;
+    iframe.dispatchEvent(
+      new CustomEvent('renderer:telemetry:event', { detail: null })
+    );
+
+    expect(onPlayerEvent).not.toHaveBeenCalled();
+  });
+
+  it('should register renderer:telemetry:event listener before initializePreview', async () => {
+    const addEventListenerSpy = vi.spyOn(HTMLIFrameElement.prototype, 'addEventListener');
+    
+    render(<EcmlPlayer metadata={mockMetadata} />);
+
+    // The listener should be registered synchronously during the effect,
+    // before the async initPlayer resolves
+    expect(addEventListenerSpy).toHaveBeenCalledWith(
+      'renderer:telemetry:event',
+      expect.any(Function)
+    );
+
+    addEventListenerSpy.mockRestore();
+  });
+
+  it('should handle postMessage events from iframe', async () => {
+    const onPlayerEvent = vi.fn();
+    const onTelemetryEvent = vi.fn();
+
+    render(
+      <EcmlPlayer
+        metadata={mockMetadata}
+        onPlayerEvent={onPlayerEvent}
+        onTelemetryEvent={onTelemetryEvent}
+      />
+    );
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    // Simulate postMessage from iframe with eid (telemetry event)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { eid: 'START', edata: { type: 'content' } },
+      })
+    );
+
+    expect(onPlayerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'START',
+        playerId: 'test-ecml-123',
+      })
+    );
+    expect(onTelemetryEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eid: 'START' })
+    );
+  });
+
+  it('should handle postMessage with string data', async () => {
+    const onPlayerEvent = vi.fn();
+
+    render(<EcmlPlayer metadata={mockMetadata} onPlayerEvent={onPlayerEvent} />);
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({ eid: 'END', edata: {} }),
+      })
+    );
+
+    expect(onPlayerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'END' })
+    );
+  });
+
+  it('should ignore postMessage with empty data', async () => {
+    const onPlayerEvent = vi.fn();
+
+    render(<EcmlPlayer metadata={mockMetadata} onPlayerEvent={onPlayerEvent} />);
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    window.dispatchEvent(new MessageEvent('message', { data: null }));
+
+    expect(onPlayerEvent).not.toHaveBeenCalled();
+  });
+
+  it('should ignore postMessage with invalid JSON string', async () => {
+    const onPlayerEvent = vi.fn();
+
+    render(<EcmlPlayer metadata={mockMetadata} onPlayerEvent={onPlayerEvent} />);
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    window.dispatchEvent(new MessageEvent('message', { data: 'not-json' }));
+
+    expect(onPlayerEvent).not.toHaveBeenCalled();
+  });
+
+  it('should not call onTelemetryEvent when eid is missing', async () => {
+    const onTelemetryEvent = vi.fn();
+
+    render(
+      <EcmlPlayer metadata={mockMetadata} onTelemetryEvent={onTelemetryEvent} />
+    );
+
+    await waitFor(() => {
+      expect(mockCreateConfig).toHaveBeenCalled();
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { event: 'some-event', data: {} },
+      })
+    );
+
+    expect(onTelemetryEvent).not.toHaveBeenCalled();
   });
 });

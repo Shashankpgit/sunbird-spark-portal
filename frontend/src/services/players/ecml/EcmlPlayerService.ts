@@ -1,5 +1,6 @@
 import { EcmlPlayerContextProps, EcmlPlayerMetadata } from './types';
 import { buildTelemetryContext } from '../telemetryContextBuilder';
+import appCoreService from '../../AppCoreService';
 
 const PREVIEW_URL = '/content/preview/preview.html?webview=true';
 
@@ -8,7 +9,10 @@ export class EcmlPlayerService {
     metadata: EcmlPlayerMetadata,
     contextProps?: EcmlPlayerContextProps
   ) {
-    const context = await buildTelemetryContext(contextProps, { contentId: metadata.identifier });
+    const [context, buildHash] = await Promise.all([
+      buildTelemetryContext(contextProps, { contentId: metadata.identifier }),
+      appCoreService.getBuildHash(),
+    ]);
 
     const config = {
       showEndPage: false,
@@ -36,6 +40,7 @@ export class EcmlPlayerService {
         showReplay: true,
       },
       enableTelemetryValidation: false,
+      buildNumber: buildHash,
     };
 
     return {
@@ -46,7 +51,8 @@ export class EcmlPlayerService {
     };
   }
 
-  buildPlayerUrl(): string {
+  buildPlayerUrl(buildHash?: string): string {
+    if (buildHash) return `${PREVIEW_URL}&buildNumber=${buildHash}`;
     return PREVIEW_URL;
   }
 }

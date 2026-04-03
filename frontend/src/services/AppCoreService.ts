@@ -6,6 +6,7 @@ class AppCoreService {
     private static instance: AppCoreService;
     private deviceId: string | null = null;
     private pDataCache: { id: string; ver: string; pid: string } | null = null;
+    private buildHashCache: string | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -81,6 +82,7 @@ class AppCoreService {
         }>('/app/v1/info');
         const data = response.data;
 
+        this.buildHashCache = data?.buildHash || "";
         this.pDataCache = {
             id: data?.appId || "",
             ver: data?.version || "",
@@ -88,6 +90,12 @@ class AppCoreService {
         };
 
         return this.pDataCache;
+    }
+
+    async getBuildHash(): Promise<string> {
+        if (this.buildHashCache !== null) return this.buildHashCache;
+        await this.getPData();
+        return this.buildHashCache ?? "";
     }
 
     async initialize(): Promise<void> {

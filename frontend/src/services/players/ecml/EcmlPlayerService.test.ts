@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EcmlPlayerService } from './EcmlPlayerService';
 import type { EcmlPlayerMetadata } from './types';
 import { buildTelemetryContext } from '../telemetryContextBuilder';
+import appCoreService from '../../AppCoreService';
+
+vi.mock('../../AppCoreService', () => ({
+  default: {
+    getBuildHash: vi.fn().mockResolvedValue('test-build-hash'),
+  },
+}));
 
 vi.mock('../telemetryContextBuilder', () => ({
   buildTelemetryContext: vi.fn().mockResolvedValue({
@@ -57,6 +64,8 @@ describe('EcmlPlayerService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    (appCoreService.getBuildHash as any).mockResolvedValue('test-build-hash');
 
     (buildTelemetryContext as any).mockImplementation(async (contextProps?: any, options?: any) => ({
       ...defaultContext,
@@ -124,6 +133,7 @@ describe('EcmlPlayerService', () => {
       expect(result.config.plugins).toHaveLength(2);
       expect(result.config.showStartPage).toBe(true);
       expect(result.config.enableTelemetryValidation).toBe(false);
+      expect(result.config.buildNumber).toBe('test-build-hash');
     });
 
     it('should include body data from metadata', async () => {
@@ -149,8 +159,14 @@ describe('EcmlPlayerService', () => {
   });
 
   describe('buildPlayerUrl', () => {
-    it('should return the preview URL', () => {
+    it('should return the preview URL without buildNumber when not provided', () => {
       expect(service.buildPlayerUrl()).toBe('/content/preview/preview.html?webview=true');
+    });
+
+    it('should append buildNumber query param when provided', () => {
+      expect(service.buildPlayerUrl('test-hash')).toBe(
+        '/content/preview/preview.html?webview=true&buildNumber=test-hash'
+      );
     });
   });
 });

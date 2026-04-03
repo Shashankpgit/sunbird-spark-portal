@@ -107,7 +107,7 @@ export const EcmlPlayer: React.FC<EcmlPlayerProps> = ({
         const config = await service.createConfig(metadata, contextProps);
         if (cancelled) return;
 
-        const playerUrl = service.buildPlayerUrl();
+        const playerUrl = service.buildPlayerUrl(config.config.buildNumber);
         iframe.src = playerUrl;
 
         iframe.onload = () => {
