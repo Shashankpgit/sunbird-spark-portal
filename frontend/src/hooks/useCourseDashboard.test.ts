@@ -12,7 +12,7 @@ const {
   mockGetPrivateUserEnrollments,
   mockReissueCertificate,
 } = vi.hoisted(() => ({
-  mockGetUserId: vi.fn<[], string | null>(),
+  mockGetUserId: vi.fn<() => string | null>(),
   mockGetAuthInfo: vi.fn(),
   mockSearchUserByUserName: vi.fn(),
   mockGetPrivateUserEnrollments: vi.fn(),

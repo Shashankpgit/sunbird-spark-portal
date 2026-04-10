@@ -8,7 +8,7 @@ import { useContentLock } from './useContentLock';
 const { mockCreateLock, mockRetireLock, mockGetUserId } = vi.hoisted(() => ({
   mockCreateLock: vi.fn(),
   mockRetireLock: vi.fn(),
-  mockGetUserId: vi.fn<[], string | null>(),
+  mockGetUserId: vi.fn<() => string | null>(),
 }));
 
 vi.mock('@/services/LockService', () => ({
