@@ -8,24 +8,40 @@ import ContentViewPage from './ContentViewPage';
 const mockNavigate = vi.fn();
 const mockToast = vi.fn();
 
-const { mockUseContentRead } = vi.hoisted(() => ({ mockUseContentRead: vi.fn() }));
+const { mockUseContentRead, mockFormRead, mockContentPublish, mockContentReject, mockHasComments, mockDeleteComments } = vi.hoisted(() => ({
+  mockUseContentRead: vi.fn(),
+  mockFormRead: vi.fn().mockResolvedValue({
+    data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } },
+  }),
+  mockContentPublish: vi.fn().mockResolvedValue({}),
+  mockContentReject: vi.fn().mockResolvedValue({}),
+  mockHasComments: vi.fn().mockResolvedValue(false),
+  mockDeleteComments: vi.fn().mockResolvedValue({}),
+}));
 
 vi.mock('@/hooks/useContentPlayer', () => ({ useContentPlayer: () => ({ handlePlayerEvent: vi.fn(), handleTelemetryEvent: vi.fn() }) }));
 vi.mock('@/hooks/useContent', () => ({ useContentRead: (...args: any[]) => mockUseContentRead(...args) }));
 vi.mock('@/hooks/useQumlContent', () => ({ useQumlContent: () => ({ data: null, isLoading: false, error: null }) }));
 vi.mock('@/hooks/useToast', () => ({ useToast: () => ({ toast: mockToast }) }));
 vi.mock('@/services/userAuthInfoService/userAuthInfoService', () => ({ default: { getUserId: () => 'uid' } }));
-vi.mock('@/services/ContentService', () => ({ ContentService: class { contentPublish = vi.fn().mockResolvedValue({}); contentReject = vi.fn().mockResolvedValue({}); } }));
+vi.mock('@/services/ContentService', () => ({
+  ContentService: class {
+    contentPublish = mockContentPublish;
+    contentReject = mockContentReject;
+  },
+}));
 vi.mock('@/services/FormService', () => ({
   FormService: class {
-    formRead = vi.fn().mockResolvedValue({ data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } } });
+    formRead = mockFormRead;
   },
 }));
 vi.mock('@/components/home/Header', () => ({ default: () => <div /> }));
 vi.mock('@/components/home/Footer', () => ({ default: () => <div /> }));
 vi.mock('@/components/common/PageLoader', () => ({ default: ({ message }: any) => <div data-testid="loader">{message}</div> }));
 vi.mock('@/components/players', () => ({ ContentPlayer: () => <div /> }));
-vi.mock('@/services/ReviewCommentService', () => ({ default: { hasComments: vi.fn().mockResolvedValue(false), deleteComments: vi.fn().mockResolvedValue({}) } }));
+vi.mock('@/services/ReviewCommentService', () => ({
+  default: { hasComments: mockHasComments, deleteComments: mockDeleteComments },
+}));
 vi.mock('@/components/workspace/ReviewPlayerSection', () => ({ default: () => <div data-testid="player" /> }));
 vi.mock('@/hooks/useTelemetry', () => ({ useTelemetry: () => ({ audit: vi.fn() }) }));
 vi.mock('@/hooks/useImpression', () => ({ default: vi.fn() }));
@@ -93,7 +109,7 @@ describe('ContentViewPage - Loading / Error / NotFound states', () => {
   it('shows error message when content load fails', () => {
     mockUseContentRead.mockReturnValue({ data: null, isLoading: false, error: new Error('Network error') });
     render(wrap(<ContentViewPage mode="view" />));
-    expect(screen.getByText(/Network error/)).toBeInTheDocument();
+    expect(screen.getByText('workspace.review.errorLoading')).toBeInTheDocument();
   });
 
   it('shows content not found message when playerMetadata is null', () => {
@@ -106,6 +122,12 @@ describe('ContentViewPage - Loading / Error / NotFound states', () => {
 describe('ContentViewPage - view mode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFormRead.mockResolvedValue({
+      data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } },
+    });
+    mockContentPublish.mockResolvedValue({});
+    mockContentReject.mockResolvedValue({});
+    mockHasComments.mockResolvedValue(false);
     mockUseContentRead.mockReturnValue(reviewContent({ status: 'Live', description: 'Some description', primaryCategory: 'Resource' }));
   });
   afterEach(() => cleanup());
@@ -131,21 +153,22 @@ describe('ContentViewPage - view mode', () => {
 describe('ContentViewPage - form load failure', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockContentPublish.mockResolvedValue({});
+    mockContentReject.mockResolvedValue({});
+    mockHasComments.mockResolvedValue(false);
     mockUseContentRead.mockReturnValue(reviewContent());
   });
   afterEach(() => cleanup());
 
   it('shows toast when form response has no fields', async () => {
-    const { FormService } = await import('@/services/FormService');
-    vi.mocked(FormService).prototype.formRead = vi.fn().mockResolvedValue({ data: { form: { data: { fields: null } } } });
+    mockFormRead.mockResolvedValue({ data: { form: { data: { fields: null } } } });
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' })));
   });
 
   it('shows toast when formRead throws', async () => {
-    const { FormService } = await import('@/services/FormService');
-    vi.mocked(FormService).prototype.formRead = vi.fn().mockRejectedValue(new Error('fail'));
+    mockFormRead.mockRejectedValue(new Error('fail'));
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' })));
@@ -155,6 +178,12 @@ describe('ContentViewPage - form load failure', () => {
 describe('ContentViewPage - Publish confirm flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFormRead.mockResolvedValue({
+      data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } },
+    });
+    mockContentPublish.mockResolvedValue({});
+    mockContentReject.mockResolvedValue({});
+    mockHasComments.mockResolvedValue(false);
     mockUseContentRead.mockReturnValue(reviewContent());
   });
   afterEach(() => cleanup());
@@ -171,8 +200,7 @@ describe('ContentViewPage - Publish confirm flow', () => {
   });
 
   it('shows error toast when publish fails', async () => {
-    const { ContentService } = await import('@/services/ContentService');
-    vi.mocked(ContentService).prototype.contentPublish = vi.fn().mockRejectedValue(new Error('fail'));
+    mockContentPublish.mockRejectedValue(new Error('fail'));
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(screen.getByTestId('checklist-dialog')).toBeInTheDocument());
@@ -184,6 +212,12 @@ describe('ContentViewPage - Publish confirm flow', () => {
 describe('ContentViewPage - Request Changes confirm flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFormRead.mockResolvedValue({
+      data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } },
+    });
+    mockContentPublish.mockResolvedValue({});
+    mockContentReject.mockResolvedValue({});
+    mockHasComments.mockResolvedValue(false);
     mockUseContentRead.mockReturnValue(reviewContent());
   });
   afterEach(() => cleanup());
@@ -200,8 +234,7 @@ describe('ContentViewPage - Request Changes confirm flow', () => {
   });
 
   it('shows error toast when reject fails', async () => {
-    const { ContentService } = await import('@/services/ContentService');
-    vi.mocked(ContentService).prototype.contentReject = vi.fn().mockRejectedValue(new Error('fail'));
+    mockContentReject.mockRejectedValue(new Error('fail'));
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /Request for Changes/i }));
     await waitFor(() => expect(screen.getByTestId('checklist-dialog')).toBeInTheDocument());
@@ -211,26 +244,30 @@ describe('ContentViewPage - Request Changes confirm flow', () => {
 });
 
 describe('ContentViewPage - ECML content paths', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFormRead.mockResolvedValue({
+      data: { form: { data: { fields: [{ title: 'Please confirm that ALL the following items are verified', contents: [], otherReason: '' }] } } },
+    });
+    mockContentPublish.mockResolvedValue({});
+    mockContentReject.mockResolvedValue({});
+  });
   afterEach(() => cleanup());
 
   const ecmlContent = () => reviewContent({ mimeType: 'application/vnd.ekstep.ecml-archive' });
 
   it('shows publish warning when ECML content has comments', async () => {
-    vi.clearAllMocks();
+    mockHasComments.mockResolvedValue(true);
     mockUseContentRead.mockReturnValue(ecmlContent());
-    const { default: rcs } = await import('@/services/ReviewCommentService');
-    vi.mocked(rcs.hasComments).mockResolvedValue(true);
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(screen.getByTestId('publish-warning-dialog')).toBeInTheDocument());
   });
 
   it('deletes comments and publishes when ECML publish warning is confirmed', async () => {
-    vi.clearAllMocks();
+    mockHasComments.mockResolvedValue(true);
+    mockDeleteComments.mockResolvedValue(undefined);
     mockUseContentRead.mockReturnValue(ecmlContent());
-    const { default: rcs } = await import('@/services/ReviewCommentService');
-    vi.mocked(rcs.hasComments).mockResolvedValue(true);
-    vi.mocked(rcs.deleteComments).mockResolvedValue(undefined as any);
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(screen.getByTestId('publish-warning-dialog')).toBeInTheDocument());
@@ -241,10 +278,8 @@ describe('ContentViewPage - ECML content paths', () => {
   });
 
   it('closes publish warning when Cancel is clicked', async () => {
-    vi.clearAllMocks();
+    mockHasComments.mockResolvedValue(true);
     mockUseContentRead.mockReturnValue(ecmlContent());
-    const { default: rcs } = await import('@/services/ReviewCommentService');
-    vi.mocked(rcs.hasComments).mockResolvedValue(true);
     render(wrap(<ContentViewPage mode="review" />));
     fireEvent.click(screen.getByRole('button', { name: /^Publish$/i }));
     await waitFor(() => expect(screen.getByTestId('publish-warning-dialog')).toBeInTheDocument());
