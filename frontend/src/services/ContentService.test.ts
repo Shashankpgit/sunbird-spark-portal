@@ -364,4 +364,39 @@ describe('ContentService', () => {
       );
     });
   });
+
+  describe('contentSearch — branch coverage', () => {
+    it('uses default sort_by when not provided (line 29 ?? branch)', async () => {
+      mockClient.post = vi.fn().mockResolvedValue({ data: {}, status: 200, headers: {} });
+      await service.contentSearch({});
+      expect(mockClient.post).toHaveBeenCalledWith(
+        '/composite/v1/search',
+        expect.objectContaining({
+          request: expect.objectContaining({
+            sort_by: { lastUpdatedOn: 'desc' },
+          }),
+        })
+      );
+    });
+
+    it('includes fields when request.fields is provided (line 30 true branch)', async () => {
+      mockClient.post = vi.fn().mockResolvedValue({ data: {}, status: 200, headers: {} });
+      await service.contentSearch({ fields: ['name', 'description'] });
+      expect(mockClient.post).toHaveBeenCalledWith(
+        '/composite/v1/search',
+        expect.objectContaining({
+          request: expect.objectContaining({
+            fields: ['name', 'description'],
+          }),
+        })
+      );
+    });
+
+    it('omits fields key when request.fields is absent (line 30 false branch)', async () => {
+      mockClient.post = vi.fn().mockResolvedValue({ data: {}, status: 200, headers: {} });
+      await service.contentSearch({});
+      const callBody = (mockClient.post as any).mock.calls[0][1];
+      expect(callBody.request).not.toHaveProperty('fields');
+    });
+  });
 });
