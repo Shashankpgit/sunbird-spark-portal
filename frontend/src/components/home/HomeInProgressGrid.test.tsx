@@ -60,7 +60,7 @@ const mockCourses = [
 
 describe('HomeInProgressGrid', () => {
     beforeEach(() => {
-        vi.clearAllMocks();
+        vi.resetAllMocks();
         mockUseUserEnrolledCollections.mockReturnValue({
             data: { data: { courses: mockCourses } },
             isLoading: false,
