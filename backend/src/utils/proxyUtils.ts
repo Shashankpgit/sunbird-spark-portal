@@ -1,6 +1,7 @@
 import { Request } from 'express';
 import * as http from 'http';
 import { envConfig } from '../config/env.js';
+import logger from './logger.js';
 
 const fallbackToken = envConfig.KONG_ANONYMOUS_FALLBACK_TOKEN;
 const loggedInFallbackToken = envConfig.KONG_LOGGEDIN_FALLBACK_TOKEN;
@@ -47,6 +48,8 @@ export const decorateRequestHeaders = (proxyReq: http.ClientRequest, req: Reques
         proxyReq.setHeader('x-auth-token', userToken);
     }
 
-    proxyReq.setHeader('Authorization', 'Bearer ' + getBearerToken(req));
+    const bearerToken = getBearerToken(req);
+    proxyReq.setHeader('Authorization', 'Bearer ' + bearerToken);
+    logger.info(`PROXY_HEADERS :: path=${req.originalUrl}, kongToken=${bearerToken}, userToken=${userToken || 'none'}, userId=${req.session?.userId || 'none'}`);
     proxyReq.setHeader('Connection', 'keep-alive');
 };

@@ -7,6 +7,7 @@ vi.mock('axios');
 vi.mock('../utils/logger.js', () => ({
     default: {
         info: vi.fn(),
+        warn: vi.fn(),
         error: vi.fn()
     }
 }));
@@ -170,7 +171,7 @@ describe('kongAuth middleware', () => {
 
             await registerDeviceWithKong()(mockRequest as Request, mockResponse as Response, mockNext);
 
-            expect(logger.info).toHaveBeenCalledWith('ANONYMOUS_KONG_TOKEN :: requesting anonymous token from Kong');
+            expect(logger.info).toHaveBeenCalledWith(`KONG_AUTH :: issuing new anonymous token for session=test-session-id`);
             expect(axios.post).toHaveBeenCalledWith('http://kong-api.com/api-manager/v2/consumer/portal_anonymous/credential/register',
                 { request: { key: 'test-session-id' } },
                 { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-bearer-token' } }
@@ -328,7 +329,7 @@ describe('kongAuth middleware', () => {
             await registerDeviceWithKong()(mockRequest as Request, mockResponse as Response, mockNext);
 
             expect(logger.info).toHaveBeenCalledWith(
-                'KONG_TOKEN_UPGRADE :: authenticated user with anonymous token, upgrading to logged-in token'
+                'KONG_AUTH :: upgrading anonymous->logged-in for userId=user-123, currentToken=anonymous-token'
             );
             expect(logger.info).toHaveBeenCalledWith(
                 'KONG_TOKEN_UPGRADE :: successfully upgraded to logged-in Kong token'

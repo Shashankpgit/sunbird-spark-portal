@@ -148,6 +148,7 @@ router.get('/auth/callback',
             if (req.session) {
                 // Regenerate session to prevent session fixation attacks
                 await regenerateSession(req);
+                logger.info(`OIDC_CALLBACK :: post-regenerate kongToken=${req.session.kongToken}, kongTokenType=${req.session.kongTokenType}, userId=${req.session.userId}`);
                 setSessionTTLFromToken(req);
 
                 // Initialize user session from token subject
@@ -168,6 +169,7 @@ router.get('/auth/callback',
 
                 // Explicitly save session before redirect to ensure all data is persisted
                 await saveSession(req);
+                logger.info(`OIDC_CALLBACK :: final session state kongToken=${req.session.kongToken}, kongTokenType=${req.session.kongTokenType}, userId=${req.session.userId}, roles=${req.session.roles}`);
 
                 // Dispatch Global Session START Telemetry
                 try {

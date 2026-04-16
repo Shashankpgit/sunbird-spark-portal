@@ -93,6 +93,7 @@ export const generateLoggedInKongToken = async (req: Request): Promise<string> =
         const token = _.get(response.data, 'result.token');
 
         if (status === 'successful' && token) {
+            logger.info(`LOGGEDIN_KONG_TOKEN :: generated token=${token} for session=${req.sessionID}`);
             return token;
         }
 
@@ -111,6 +112,7 @@ export const generateLoggedInKongToken = async (req: Request): Promise<string> =
         );
     }
 
+    logger.warn(`LOGGEDIN_KONG_TOKEN :: USING FALLBACK token=${envConfig.KONG_LOGGEDIN_FALLBACK_TOKEN} for session=${req.sessionID}`);
     return envConfig.KONG_LOGGEDIN_FALLBACK_TOKEN;
 };
 

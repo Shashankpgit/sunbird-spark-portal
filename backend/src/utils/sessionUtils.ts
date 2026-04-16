@@ -46,6 +46,7 @@ export const regenerateSession = (req: Request): Promise<void> => {
                     const newKongToken = await generateLoggedInKongToken(req);
                     req.session.kongToken = newKongToken;
                     req.session.kongTokenType = 'logged-in';
+                    logger.info(`regenerateSession :: kongToken set, type=logged-in, token=${newKongToken}, session=${req.sessionID}`);
 
                     req.session.save((saveErr) => {
                         if (saveErr) {

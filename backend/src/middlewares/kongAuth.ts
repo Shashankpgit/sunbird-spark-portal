@@ -10,7 +10,7 @@ export const registerDeviceWithKong = () => {
 
         // If user is authenticated but still holding an anonymous Kong token, upgrade it
         if (req.session.kongToken && req.session.userId && req.session.kongTokenType === 'anonymous') {
-            logger.info('KONG_TOKEN_UPGRADE :: authenticated user with anonymous token, upgrading to logged-in token');
+            logger.info(`KONG_AUTH :: upgrading anonymous->logged-in for userId=${req.session.userId}, currentToken=${req.session.kongToken}`);
             try {
                 const token = await generateLoggedInKongToken(req);
                 req.session.kongToken = token;
@@ -26,6 +26,7 @@ export const registerDeviceWithKong = () => {
 
         // Reuse existing token — only refresh if session is near expiry
         if (req.session.kongToken) {
+            logger.info(`KONG_AUTH :: reusing existing token, type=${req.session.kongTokenType}, userId=${req.session.userId || 'none'}, token=${req.session.kongToken}`);
             const isAnonymous = !req.session.userId;
 
             if (!isSessionNearExpiry(req)) {
@@ -56,7 +57,7 @@ export const registerDeviceWithKong = () => {
 
         // Only generate anonymous token for non-authenticated users
         if (!req.session.userId) {
-            logger.info('ANONYMOUS_KONG_TOKEN :: requesting anonymous token from Kong');
+            logger.info(`KONG_AUTH :: issuing new anonymous token for session=${req.sessionID}`);
 
             let token: string | null;
 
