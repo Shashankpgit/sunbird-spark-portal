@@ -1,0 +1,10 @@
+version: 2              ← Always 2, this is the config format version
+
+updates:                ← List of ecosystems to monitor
+
+  - package-ecosystem: "npm"   ← Watch npm packages
+    
+    directory: "/backend"      ← Look for package.json here
+    
+    schedule:
+      interval: "weekly"       ← Check for updates every week
