@@ -8,3 +8,8 @@ updates:                ← List of ecosystems to monitor
     
     schedule:
       interval: "weekly"       ← Check for updates every week
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
